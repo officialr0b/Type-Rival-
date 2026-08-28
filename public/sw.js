@@ -1,4 +1,4 @@
-const CACHE = 'typerival-shell-v4';
+const CACHE = 'typerival-shell-v5';
 const SHELL = ['/', '/manifest.webmanifest', '/icon.png', '/og.png'];
 
 self.addEventListener('install', (event) => {

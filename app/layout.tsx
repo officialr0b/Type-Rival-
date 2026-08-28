@@ -3,7 +3,7 @@ import './globals.css';
 
 const deploymentHost = process.env.NEXT_PUBLIC_SITE_URL
   ?? (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : null)
-  ?? 'https://typerival.robert-perez2132.chatgpt.site';
+  ?? 'https://type-rival-five.vercel.app';
 
 export const metadata: Metadata = {
   metadataBase: new URL(deploymentHost),

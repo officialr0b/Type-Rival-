@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { getSupabaseBrowserClient, isSupabaseConfigured } from '../lib/supabase-browser';
 
 type AuthMode = 'signin' | 'signup' | 'forgot' | 'update';
@@ -18,7 +18,37 @@ export default function AuthModal({ open, initialMode = 'signin', onClose, onAut
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const modalRef = useRef<HTMLElement>(null);
   const configured = isSupabaseConfigured();
+
+  useEffect(() => {
+    if (!open) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const modal = modalRef.current;
+    window.requestAnimationFrame(() => modal?.querySelector<HTMLElement>('input, button')?.focus());
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== 'Tab' || !modal) return;
+      const controls = Array.from(modal.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [href], [tabindex]:not([tabindex="-1"])'));
+      if (controls.length === 0) return;
+      const first = controls[0]!;
+      const last = controls[controls.length - 1]!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault(); last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault(); first.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('keydown', handleKey);
+      previouslyFocused?.focus();
+    };
+  }, [onClose, open]);
 
   if (!open) return null;
 
@@ -80,7 +110,7 @@ export default function AuthModal({ open, initialMode = 'signin', onClose, onAut
 
   return (
     <div className="modal-backdrop auth-backdrop" role="dialog" aria-modal="true" aria-labelledby="auth-title">
-      <section className="auth-modal">
+      <section className="auth-modal" ref={modalRef}>
         <button className="auth-close" onClick={onClose} aria-label="Close account window">×</button>
         <span className="wordmark-mark">TR</span>
         <span className="eyebrow">TYPERIVAL ACCOUNT</span>
@@ -108,7 +138,7 @@ export default function AuthModal({ open, initialMode = 'signin', onClose, onAut
           {mode === 'signup' && <button onClick={() => setMode('signin')}>Already have an account? Sign in</button>}
           {(mode === 'forgot' || mode === 'update') && <button onClick={() => setMode('signin')}>← Back to sign in</button>}
         </div>
-        <small>By continuing, you agree to TypeRival’s beta rules, privacy, and fair-play standards. Players under 13 use private local practice only.</small>
+        <small>By continuing, you agree to TypeRival’s <a href="/terms">beta terms</a>, <a href="/privacy">privacy notice</a>, and <a href="/rules">fair-play rules</a>. Players under 13 use private local practice only.</small>
       </section>
     </div>
   );

@@ -1,17 +1,21 @@
 import { createClient, type User } from 'npm:@supabase/supabase-js@2.112.4';
-import { calculateMetrics, decideWinner, getPassage, xpForMode, type GameMode } from '../../../lib/game.ts';
+import { calculateMetrics, decideWinner, getPassage, PASSAGES, xpForMode, type GameMode } from '../../../lib/game.ts';
 import { updateGlicko2 } from '../../../lib/glicko2.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-const db = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
 const DOUBLE_XP_MS = 30 * 60 * 1_000;
+const RANKED_DURATION_SEC = 45;
+const RUN_EXPIRY_GRACE_MS = 30_000;
+const ALLOWED_ORIGIN = 'https://type-rival-five.vercel.app';
 const CORS = {
-  'access-control-allow-origin': '*',
-  'access-control-allow-headers': 'authorization, apikey, content-type',
-  'access-control-allow-methods': 'GET, POST, OPTIONS',
+  'access-control-allow-origin': ALLOWED_ORIGIN,
+  'access-control-allow-headers': 'authorization, apikey, content-type, x-typerival-client-ip',
+  'access-control-allow-methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+  vary: 'origin',
 };
 
 type PlayerRow = {
@@ -28,34 +32,75 @@ type PlayerRow = {
   double_xp_until: string | null;
 };
 
-Deno.serve(async (request) => {
-  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
+type RunTicketRow = {
+  id: string;
+  user_id: string;
+  mode: GameMode;
+  passage_id: string;
+  duration_sec: number;
+  issued_at: string;
+  started_at: string | null;
+  expires_at: string;
+  consumed_at: string | null;
+};
 
+Deno.serve(async (request) => {
+  const requestId = crypto.randomUUID();
+  const startedAt = Date.now();
+  if (request.method === 'OPTIONS') {
+    return withRequestId(new Response(null, { status: 204, headers: CORS }), requestId);
+  }
+
+  let routeName = 'unknown';
+  let user: User | null = null;
   try {
     const url = new URL(request.url);
     const route = routeParts(url.pathname);
-    const user = await authenticatedUser(request);
+    routeName = `${request.method} /${route.join('/')}`;
+    user = await authenticatedUser(request);
+    if (!await withinRateLimit(request, user, route[0] ?? 'unknown')) {
+      return finish(json({ error: 'Too many requests. Please wait a moment and try again.' }, 429), requestId, routeName, startedAt, user);
+    }
 
+    let response: Response;
     if (request.method === 'GET' && route[0] === 'bootstrap') {
-      return json(await bootstrap(url, user));
-    }
-    if (request.method === 'POST' && route[0] === 'sessions') {
-      return await submitSession(request, user);
-    }
-    if (route[0] === 'challenges' && route[1]) {
-      return request.method === 'GET'
+      response = json(await bootstrap(url, user));
+    } else if (request.method === 'POST' && route[0] === 'runs') {
+      response = await issueRun(request, user);
+    } else if (request.method === 'PATCH' && route[0] === 'runs' && route[1]) {
+      response = await startRun(route[1], user);
+    } else if (request.method === 'POST' && route[0] === 'sessions') {
+      response = await submitSession(request, user);
+    } else if (route[0] === 'account' && route[1] === 'export' && request.method === 'GET') {
+      response = await exportAccount(user);
+    } else if (route[0] === 'account' && request.method === 'PATCH') {
+      response = await updateAccount(request, user);
+    } else if (route[0] === 'account' && request.method === 'DELETE') {
+      response = await deleteAccount(user);
+    } else if (route[0] === 'challenges' && route[1]) {
+      response = request.method === 'GET'
         ? await loadChallenge(route[1])
         : request.method === 'POST'
           ? await attemptChallenge(request, route[1], user)
           : json({ error: 'Method not allowed.' }, 405);
+    } else if (request.method === 'POST' && route[0] === 'challenges') {
+      response = await createChallenge(request, user);
+    } else {
+      response = json({ error: 'TypeRival endpoint not found.' }, 404);
     }
-    if (request.method === 'POST' && route[0] === 'challenges') {
-      return await createChallenge(request, user);
-    }
-    return json({ error: 'TypeRival endpoint not found.' }, 404);
+    return finish(response, requestId, routeName, startedAt, user);
   } catch (error) {
-    console.error('typerival_api_failed', error);
-    return json({ error: 'TypeRival could not complete that request.' }, 500);
+    if (error instanceof RequestError) {
+      return finish(json({ error: error.message }, error.status), requestId, routeName, startedAt, user);
+    }
+    console.error(JSON.stringify({
+      event: 'typerival_api_failed',
+      requestId,
+      route: routeName,
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    return finish(json({ error: 'TypeRival could not complete that request.' }, 500), requestId, routeName, startedAt, user);
   }
 });
 
@@ -70,20 +115,23 @@ async function authenticatedUser(request: Request) {
   if (!header?.startsWith('Bearer ')) return null;
   const token = header.slice(7).trim();
   if (token.length < 20) return null;
-  const { data, error } = await db.auth.getUser(token);
+  const authClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  const { data, error } = await authClient.auth.getUser(token);
   return error ? null : data.user;
 }
 
 async function ensurePlayer(user: User): Promise<PlayerRow> {
-  const existing = await db.from('players').select('*').eq('id', user.id).maybeSingle();
+  const existing = await admin.from('players').select('*').eq('id', user.id).maybeSingle();
   if (existing.error) throw existing.error;
   if (existing.data) return existing.data as PlayerRow;
 
-  const metadata = user.user_metadata as Record<string, unknown>;
-  const displayName = firstString(metadata.full_name, metadata.name, metadata.display_name) ?? user.email ?? 'Rival';
-  const safeBase = displayName.split('@')[0]?.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12) || 'Rival';
-  const suffix = user.id.replace(/[^a-zA-Z0-9]/g, '').slice(-4).toUpperCase();
-  const inserted = await db.from('players').upsert({ id: user.id, handle: `${safeBase}${suffix}` }, { onConflict: 'id' }).select('*').single();
+  const suffix = user.id.replace(/[^a-zA-Z0-9]/g, '').slice(-12).toUpperCase();
+  const inserted = await admin.from('players')
+    .upsert({ id: user.id, handle: `Rival_${suffix}` }, { onConflict: 'id' })
+    .select('*')
+    .single();
   if (inserted.error) throw inserted.error;
   return inserted.data as PlayerRow;
 }
@@ -92,52 +140,43 @@ async function bootstrap(url: URL, user: User | null) {
   const eligible = ['teen', 'adult'].includes(url.searchParams.get('ageBand') ?? '');
   const player = user && eligible ? await ensurePlayer(user) : null;
   const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000).toISOString();
-
-  const boardQuery = await db.from('sessions')
-    .select('user_id, net_wpm, accuracy, players!inner(handle, rating)')
-    .eq('risk_status', 'clear').gte('created_at', cutoff).limit(10_000);
+  const boardQuery = await admin.rpc('tr_get_leaderboard', { p_cutoff: cutoff, p_limit: 10 });
   if (boardQuery.error) throw boardQuery.error;
-  const board = new Map<string, { handle: string; rating: number; wpm: number; accuracy: number; sessions: number }>();
-  for (const raw of boardQuery.data ?? []) {
-    const row = raw as unknown as { user_id: string; net_wpm: number; accuracy: number; players: { handle: string; rating: number } | Array<{ handle: string; rating: number }> };
-    const joined = Array.isArray(row.players) ? row.players[0] : row.players;
-    if (!joined) continue;
-    const current = board.get(row.user_id) ?? { handle: joined.handle, rating: joined.rating, wpm: 0, accuracy: 0, sessions: 0 };
-    current.wpm += row.net_wpm; current.accuracy += row.accuracy; current.sessions += 1;
-    board.set(row.user_id, current);
-  }
-  const leaderboard = Array.from(board.values()).map((entry) => ({
-    handle: entry.handle,
-    averageWpm: round(entry.wpm / entry.sessions),
-    accuracy: round(entry.accuracy / entry.sessions),
-    sessions: entry.sessions,
-    rating: entry.rating,
-  })).sort((a, b) => b.averageWpm - a.averageWpm || b.accuracy - a.accuracy).slice(0, 10);
+  const leaderboard = (boardQuery.data ?? []).map((entry: Record<string, unknown>) => ({
+    handle: String(entry.handle),
+    averageWpm: Number(entry.average_wpm),
+    accuracy: Number(entry.accuracy),
+    sessions: Number(entry.sessions),
+    rating: Number(entry.rating),
+  }));
 
   let stats = { sessions: 0, averageWpm: 0, bestWpm: 0, accuracy: 0, activeDays: 0 };
   let latestRanked: Record<string, unknown> | null = null;
   if (player) {
-    const runs = await db.from('sessions').select('net_wpm, accuracy, created_at')
-      .eq('user_id', player.id).eq('risk_status', 'clear').gte('created_at', cutoff);
-    if (runs.error) throw runs.error;
-    if (runs.data?.length) {
+    const statsQuery = await admin.rpc('tr_get_player_stats', { p_user_id: player.id, p_cutoff: cutoff });
+    if (statsQuery.error) throw statsQuery.error;
+    const summary = Array.isArray(statsQuery.data) ? statsQuery.data[0] : statsQuery.data;
+    if (summary) {
       stats = {
-        sessions: runs.data.length,
-        averageWpm: round(runs.data.reduce((sum, run) => sum + run.net_wpm, 0) / runs.data.length),
-        bestWpm: round(Math.max(...runs.data.map((run) => run.net_wpm))),
-        accuracy: round(runs.data.reduce((sum, run) => sum + run.accuracy, 0) / runs.data.length),
-        activeDays: new Set(runs.data.map((run) => run.created_at.slice(0, 10))).size,
+        sessions: Number(summary.sessions),
+        averageWpm: Number(summary.average_wpm),
+        bestWpm: Number(summary.best_wpm),
+        accuracy: Number(summary.accuracy),
+        activeDays: Number(summary.active_days),
       };
     }
-    const latest = await db.from('sessions').select('match_status, outcome, rating_delta, created_at')
+
+    const latest = await admin.from('sessions').select('match_status, outcome, rating_delta, created_at')
       .eq('user_id', player.id).eq('mode', 'ranked').order('created_at', { ascending: false }).limit(1).maybeSingle();
     if (latest.error) throw latest.error;
-    if (latest.data) latestRanked = {
-      matchStatus: latest.data.match_status,
-      outcome: latest.data.outcome,
-      ratingDelta: latest.data.rating_delta,
-      createdAt: latest.data.created_at,
-    };
+    if (latest.data) {
+      latestRanked = {
+        matchStatus: latest.data.match_status,
+        outcome: latest.data.outcome,
+        ratingDelta: latest.data.rating_delta,
+        createdAt: latest.data.created_at,
+      };
+    }
   }
 
   return {
@@ -158,69 +197,200 @@ async function bootstrap(url: URL, user: User | null) {
   };
 }
 
+async function issueRun(request: Request, user: User | null) {
+  if (!user) return json({ error: 'Sign in to authorize a saved run.' }, 401);
+  const body = await request.json() as {
+    mode?: GameMode;
+    passageId?: string;
+    durationSec?: number;
+    ageBand?: 'under13' | 'teen' | 'adult';
+  };
+  if (body.ageBand !== 'teen' && body.ageBand !== 'adult') {
+    return json({ error: 'Saved runs are available for players 13 and older.' }, 403);
+  }
+  if (!body.mode || !['practice', 'friendly', 'ranked', 'challenge'].includes(body.mode)) {
+    return json({ error: 'Invalid run mode.' }, 400);
+  }
+
+  const durationSec = body.mode === 'ranked' ? RANKED_DURATION_SEC : Number(body.durationSec);
+  if (![30, 45, 60, 120].includes(durationSec)) return json({ error: 'Invalid run duration.' }, 400);
+  const passage = body.mode === 'ranked' ? currentRankedPassage() : body.passageId ? getPassage(body.passageId) : undefined;
+  if (!passage) return json({ error: 'Invalid run passage.' }, 400);
+
+  const player = await ensurePlayer(user);
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1_000).toISOString();
+  const inserted = await admin.from('run_tickets').insert({
+    user_id: player.id,
+    mode: body.mode,
+    passage_id: passage.id,
+    duration_sec: durationSec,
+    expires_at: expiresAt,
+  }).select('*').single();
+  if (inserted.error) throw inserted.error;
+  return json({
+    runTicketId: inserted.data.id,
+    passageId: passage.id,
+    durationSec,
+    issuedAt: inserted.data.issued_at,
+    expiresAt,
+  }, 201);
+}
+
+async function startRun(runTicketId: string, user: User | null) {
+  if (!user) return json({ error: 'Sign in to start an authorized run.' }, 401);
+  const selected = await admin.from('run_tickets').select('*')
+    .eq('id', runTicketId).eq('user_id', user.id).maybeSingle();
+  if (selected.error) throw selected.error;
+  const ticket = selected.data as RunTicketRow | null;
+  if (!ticket || ticket.consumed_at || Date.parse(ticket.expires_at) <= Date.now()) {
+    return json({ error: 'This run authorization is missing, expired, or already used.' }, 409);
+  }
+  if (ticket.started_at) {
+    return json({ startedAt: ticket.started_at, expiresAt: ticket.expires_at });
+  }
+  const startedAt = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + ticket.duration_sec * 1_000 + RUN_EXPIRY_GRACE_MS).toISOString();
+  const updated = await admin.from('run_tickets').update({ started_at: startedAt, expires_at: expiresAt })
+    .eq('id', ticket.id).is('started_at', null).is('consumed_at', null)
+    .select('started_at, expires_at').maybeSingle();
+  if (updated.error) throw updated.error;
+  if (!updated.data) return json({ error: 'This run was already started.' }, 409);
+  return json({ startedAt: updated.data.started_at, expiresAt: updated.data.expires_at });
+}
+
+async function consumeRunTicket(
+  user: User,
+  runTicketId: string,
+  mode: GameMode,
+  passageId: string,
+  durationSec: number,
+  elapsedMs: number,
+) {
+  const selected = await admin.from('run_tickets').select('*')
+    .eq('id', runTicketId).eq('user_id', user.id).maybeSingle();
+  if (selected.error) throw selected.error;
+  const ticket = selected.data as RunTicketRow | null;
+  if (!ticket || !ticket.started_at || ticket.consumed_at || Date.parse(ticket.expires_at) <= Date.now()) {
+    throw new RequestError('This run authorization is missing, expired, or already used.', 409);
+  }
+  if (ticket.mode !== mode || ticket.passage_id !== passageId || ticket.duration_sec !== durationSec) {
+    throw new RequestError('This result does not match its authorized run.', 409);
+  }
+  const serverElapsed = Date.now() - Date.parse(ticket.started_at);
+  if (elapsedMs > durationSec * 1_000 + 1_500 || elapsedMs > serverElapsed + 1_500 || serverElapsed > durationSec * 1_000 + RUN_EXPIRY_GRACE_MS) {
+    throw new RequestError('This run did not pass the server timing check.', 422);
+  }
+
+  const consumed = await admin.from('run_tickets')
+    .update({ consumed_at: new Date().toISOString() })
+    .eq('id', ticket.id).is('consumed_at', null)
+    .select('id').maybeSingle();
+  if (consumed.error) throw consumed.error;
+  if (!consumed.data) throw new RequestError('This run authorization was already used.', 409);
+  return ticket;
+}
+
 async function submitSession(request: Request, user: User | null) {
   const body = await request.json() as {
-    mode?: GameMode; passageId?: string; input?: string; elapsedMs?: number;
-    totalTypedChars?: number; ageBand?: 'under13' | 'teen' | 'adult';
+    mode?: GameMode;
+    passageId?: string;
+    input?: string;
+    elapsedMs?: number;
+    totalTypedChars?: number;
+    durationSec?: number;
+    runTicketId?: string;
+    ageBand?: 'under13' | 'teen' | 'adult';
   };
   const mode = body.mode;
   const passage = body.passageId ? getPassage(body.passageId) : undefined;
   const input = typeof body.input === 'string' ? body.input.slice(0, 1_000) : '';
   const elapsedMs = Number(body.elapsedMs);
   const totalTypedChars = Number(body.totalTypedChars);
+  const durationSec = Number(body.durationSec);
   if (!mode || !['practice', 'friendly', 'ranked'].includes(mode) || !passage) return json({ error: 'Invalid race.' }, 400);
-  if (!Number.isFinite(elapsedMs) || elapsedMs < 1_000 || elapsedMs > 121_000) return json({ error: 'Invalid race timing.' }, 400);
-  if (!Number.isFinite(totalTypedChars) || totalTypedChars < input.length || totalTypedChars > 2_000) return json({ error: 'Invalid input count.' }, 400);
+  if (![30, 45, 60, 120].includes(durationSec) || (mode === 'ranked' && durationSec !== RANKED_DURATION_SEC)) {
+    return json({ error: 'Invalid race duration.' }, 400);
+  }
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 1_000 || elapsedMs > durationSec * 1_000 + 1_500) {
+    return json({ error: 'Invalid race timing.' }, 400);
+  }
+  if (!Number.isFinite(totalTypedChars) || totalTypedChars < input.length || totalTypedChars > 2_000) {
+    return json({ error: 'Invalid input count.' }, 400);
+  }
 
   const metrics = calculateMetrics(passage.text, input, elapsedMs, totalTypedChars);
-  const riskStatus = metrics.grossWpm > 260 || totalTypedChars / Math.max(1, elapsedMs / 1_000) > 24 ? 'review' : 'clear';
+  const riskStatus = runRiskStatus(metrics.grossWpm, totalTypedChars, elapsedMs);
   const baseXp = xpForMode(mode);
-  if (body.ageBand === 'under13') return json({ metrics, xpEarned: baseXp, xpMultiplier: 1, saved: false, riskStatus, match: null });
-  if (body.ageBand !== 'teen' && body.ageBand !== 'adult') return json({ error: 'Choose an age range before saving or competing.' }, 400);
+  if (body.ageBand === 'under13') {
+    return json({ metrics, xpEarned: baseXp, xpMultiplier: 1, saved: false, riskStatus, match: null });
+  }
+  if (body.ageBand !== 'teen' && body.ageBand !== 'adult') {
+    return json({ error: 'Choose an age range before saving or competing.' }, 400);
+  }
   if (!user) {
     if (mode === 'ranked') return json({ error: 'Sign in to submit a ranked run.' }, 401);
     return json({ metrics, xpEarned: baseXp, xpMultiplier: 1, saved: false, riskStatus, match: null });
   }
+  if (typeof body.runTicketId !== 'string') return json({ error: 'Start a new authorized run before submitting.' }, 409);
+  await consumeRunTicket(user, body.runTicketId, mode, passage.id, durationSec, elapsedMs);
 
   const player = await ensurePlayer(user);
   const doubleXpActive = Boolean(player.double_xp_until && Date.parse(player.double_xp_until) > Date.now());
   const xpMultiplier = doubleXpActive ? 2 : 1;
   const xpEarned = baseXp * xpMultiplier;
   const matchStatus = mode === 'ranked' && riskStatus === 'clear' ? 'pending' : 'none';
-  const inserted = await db.rpc('tr_insert_session', {
-    p_user_id: player.id, p_mode: mode, p_passage_id: passage.id,
-    p_duration_ms: Math.round(elapsedMs), p_total_typed_chars: Math.round(totalTypedChars),
-    p_correct_chars: metrics.correctChars, p_incorrect_chars: metrics.incorrectChars,
-    p_gross_wpm: metrics.grossWpm, p_net_wpm: metrics.netWpm, p_accuracy: metrics.accuracy,
-    p_performance_score: metrics.performanceScore, p_xp_earned: xpEarned,
-    p_risk_status: riskStatus, p_match_status: matchStatus,
+  const inserted = await admin.rpc('tr_insert_session', {
+    p_user_id: player.id,
+    p_mode: mode,
+    p_passage_id: passage.id,
+    p_duration_ms: Math.round(elapsedMs),
+    p_total_typed_chars: Math.round(totalTypedChars),
+    p_correct_chars: metrics.correctChars,
+    p_incorrect_chars: metrics.incorrectChars,
+    p_gross_wpm: metrics.grossWpm,
+    p_net_wpm: metrics.netWpm,
+    p_accuracy: metrics.accuracy,
+    p_performance_score: metrics.performanceScore,
+    p_xp_earned: xpEarned,
+    p_risk_status: riskStatus,
+    p_match_status: matchStatus,
+    p_run_ticket_id: body.runTicketId,
   });
   if (inserted.error) throw inserted.error;
   const session = Array.isArray(inserted.data) ? inserted.data[0] : inserted.data;
   const match = mode === 'ranked' && riskStatus === 'clear'
-    ? await tryRankedMatch(session.id, player.id, passage.id)
+    ? await tryRankedMatch(session.id, player, passage.id)
     : null;
 
   return json({
-    metrics, xpEarned, xpMultiplier,
+    metrics,
+    xpEarned,
+    xpMultiplier,
     doubleXpUntil: match?.doubleXpUntil ?? player.double_xp_until,
-    saved: true, riskStatus, sessionId: session.id, match,
+    saved: true,
+    riskStatus,
+    sessionId: session.id,
+    match,
   });
 }
 
-async function tryRankedMatch(sessionId: string, userId: string, passageId: string) {
-  const claimed = await db.rpc('tr_claim_ranked_pair', {
-    p_session_id: sessionId, p_user_id: userId, p_passage_id: passageId,
+async function tryRankedMatch(sessionId: string, player: PlayerRow, passageId: string) {
+  const claimed = await admin.rpc('tr_claim_ranked_pair', {
+    p_session_id: sessionId,
+    p_user_id: player.id,
+    p_passage_id: passageId,
+    p_current_rating: player.rating,
+    p_rating_window: 250,
   });
   if (claimed.error) throw claimed.error;
   const pair = Array.isArray(claimed.data) ? claimed.data[0] : claimed.data;
   if (!pair) return { status: 'pending' };
 
   try {
-    const players = await db.from('players').select('*').in('id', [pair.current_user_id, pair.opponent_user_id]);
+    const players = await admin.from('players').select('*').in('id', [pair.current_user_id, pair.opponent_user_id]);
     if (players.error) throw players.error;
-    const currentPlayer = players.data?.find((player) => player.id === pair.current_user_id) as PlayerRow | undefined;
-    const opponentPlayer = players.data?.find((player) => player.id === pair.opponent_user_id) as PlayerRow | undefined;
+    const currentPlayer = players.data?.find((entry) => entry.id === pair.current_user_id) as PlayerRow | undefined;
+    const opponentPlayer = players.data?.find((entry) => entry.id === pair.opponent_user_id) as PlayerRow | undefined;
     if (!currentPlayer || !opponentPlayer) throw new Error('Ranked players unavailable.');
 
     const decision = decideWinner(
@@ -234,7 +404,7 @@ async function tryRankedMatch(sessionId: string, userId: string, passageId: stri
     const currentOutcome = decision === 'a' ? 'win' : decision === 'b' ? 'loss' : 'draw';
     const opponentOutcome = decision === 'b' ? 'win' : decision === 'a' ? 'loss' : 'draw';
     const boostUntil = new Date(Date.now() + DOUBLE_XP_MS).toISOString();
-    const finalized = await db.rpc('tr_finalize_ranked_match', {
+    const finalized = await admin.rpc('tr_finalize_ranked_match', {
       p_current_session_id: pair.current_session_id,
       p_opponent_session_id: pair.opponent_session_id,
       p_current_rating: currentUpdated.rating,
@@ -252,14 +422,16 @@ async function tryRankedMatch(sessionId: string, userId: string, passageId: stri
     });
     if (finalized.error) throw finalized.error;
     return {
-      status: 'matched', outcome: currentOutcome, opponentHandle: opponentPlayer.handle,
+      status: 'matched',
+      outcome: currentOutcome,
+      opponentHandle: opponentPlayer.handle,
       opponentScore: pair.opponent_performance_score,
       ratingDelta: round(currentUpdated.rating - currentPlayer.rating),
       rating: round(currentUpdated.rating),
       doubleXpUntil: currentOutcome === 'win' ? boostUntil : currentPlayer.double_xp_until,
     };
   } catch (error) {
-    await db.from('sessions').update({ match_status: 'pending' })
+    await admin.from('sessions').update({ match_status: 'pending' })
       .in('id', [pair.current_session_id, pair.opponent_session_id]).eq('match_status', 'matching');
     throw error;
   }
@@ -268,33 +440,59 @@ async function tryRankedMatch(sessionId: string, userId: string, passageId: stri
 async function createChallenge(request: Request, user: User | null) {
   if (!user) return json({ error: 'Sign in to create a friendly challenge.' }, 401);
   const body = await request.json() as {
-    passageId?: string; durationSec?: number; input?: string; elapsedMs?: number;
-    totalTypedChars?: number; ageBand?: 'under13' | 'teen' | 'adult';
+    sessionId?: string;
+    passageId?: string;
+    durationSec?: number;
+    input?: string;
+    elapsedMs?: number;
+    totalTypedChars?: number;
+    ageBand?: 'under13' | 'teen' | 'adult';
   };
-  if (body.ageBand !== 'teen' && body.ageBand !== 'adult') return json({ error: 'Friendly challenges are available for players 13 and older.' }, 403);
+  if (body.ageBand !== 'teen' && body.ageBand !== 'adult') {
+    return json({ error: 'Friendly challenges are available for players 13 and older.' }, 403);
+  }
   const passage = body.passageId ? getPassage(body.passageId) : undefined;
   const durationSec = Number(body.durationSec);
   const input = typeof body.input === 'string' ? body.input.slice(0, 1_000) : '';
   const elapsedMs = Number(body.elapsedMs);
   const totalTypedChars = Number(body.totalTypedChars);
-  if (!passage || ![30, 45, 60, 120].includes(durationSec) || elapsedMs < 1_000 || elapsedMs > 121_000) return json({ error: 'Invalid challenge run.' }, 400);
-  const metrics = calculateMetrics(passage.text, input, elapsedMs, totalTypedChars);
-  if (metrics.grossWpm > 260) return json({ error: 'This run needs review before sharing.' }, 422);
+  if (!passage || ![30, 45, 60, 120].includes(durationSec) || elapsedMs < 1_000 || elapsedMs > durationSec * 1_000 + 1_500) {
+    return json({ error: 'Invalid challenge run.' }, 400);
+  }
+  if (typeof body.sessionId !== 'string') return json({ error: 'The source run was not saved.' }, 409);
 
   const player = await ensurePlayer(user);
+  const source = await admin.from('sessions').select('id, passage_id, duration_ms, net_wpm, accuracy, risk_status')
+    .eq('id', body.sessionId).eq('user_id', player.id).eq('mode', 'friendly').maybeSingle();
+  if (source.error) throw source.error;
+  if (!source.data || source.data.risk_status !== 'clear' || source.data.passage_id !== passage.id) {
+    return json({ error: 'The source run is not eligible for sharing.' }, 422);
+  }
+  const metrics = calculateMetrics(passage.text, input, elapsedMs, totalTypedChars);
+  if (!nearlyEqual(metrics.netWpm, source.data.net_wpm) || !nearlyEqual(metrics.accuracy, source.data.accuracy)) {
+    return json({ error: 'The challenge payload does not match its verified run.' }, 409);
+  }
+
   const code = crypto.randomUUID().replaceAll('-', '').slice(0, 8).toUpperCase();
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000).toISOString();
-  const created = await db.from('challenges').insert({
-    code, creator_user_id: player.id, creator_handle: player.handle, passage_id: passage.id,
-    duration_sec: durationSec, creator_input: input, creator_elapsed_ms: Math.round(elapsedMs),
-    creator_total_typed_chars: Math.round(totalTypedChars), expires_at: expiresAt,
+  const created = await admin.from('challenges').insert({
+    code,
+    creator_user_id: player.id,
+    creator_handle: player.handle,
+    source_session_id: source.data.id,
+    passage_id: passage.id,
+    duration_sec: durationSec,
+    creator_input: input,
+    creator_elapsed_ms: Math.round(elapsedMs),
+    creator_total_typed_chars: Math.round(totalTypedChars),
+    expires_at: expiresAt,
   });
   if (created.error) throw created.error;
   return json({ code, creatorHandle: player.handle, metrics, path: `/?challenge=${code}`, expiresAt });
 }
 
 async function loadChallenge(code: string) {
-  const loaded = await db.from('challenges').select('*').eq('code', code.toUpperCase())
+  const loaded = await admin.from('challenges').select('*').eq('code', code.toUpperCase())
     .gt('expires_at', new Date().toISOString()).maybeSingle();
   if (loaded.error) throw loaded.error;
   if (!loaded.data) return json({ error: 'Challenge not found or expired.' }, 404);
@@ -302,7 +500,9 @@ async function loadChallenge(code: string) {
   if (!passage) return json({ error: 'Challenge passage is unavailable.' }, 404);
   const creatorMetrics = calculateMetrics(passage.text, loaded.data.creator_input, loaded.data.creator_elapsed_ms, loaded.data.creator_total_typed_chars);
   return json({
-    code: loaded.data.code, creatorHandle: loaded.data.creator_handle, passageId: passage.id,
+    code: loaded.data.code,
+    creatorHandle: loaded.data.creator_handle,
+    passageId: passage.id,
     durationSec: loaded.data.duration_sec,
     creatorMetrics: { netWpm: creatorMetrics.netWpm, accuracy: creatorMetrics.accuracy },
     expiresAt: loaded.data.expires_at,
@@ -310,43 +510,172 @@ async function loadChallenge(code: string) {
 }
 
 async function attemptChallenge(request: Request, code: string, user: User | null) {
-  const loaded = await db.from('challenges').select('*').eq('code', code.toUpperCase())
+  const loaded = await admin.from('challenges').select('*').eq('code', code.toUpperCase())
     .gt('expires_at', new Date().toISOString()).maybeSingle();
   if (loaded.error) throw loaded.error;
   if (!loaded.data) return json({ error: 'Challenge not found or expired.' }, 404);
   const passage = getPassage(loaded.data.passage_id);
   if (!passage) return json({ error: 'Challenge passage is unavailable.' }, 404);
-  const body = await request.json() as { input?: string; elapsedMs?: number; totalTypedChars?: number; ageBand?: 'under13' | 'teen' | 'adult' };
-  if (body.ageBand !== 'teen' && body.ageBand !== 'adult') return json({ error: 'Friendly challenges are available for players 13 and older.' }, 403);
+  const body = await request.json() as {
+    input?: string;
+    elapsedMs?: number;
+    totalTypedChars?: number;
+    durationSec?: number;
+    runTicketId?: string;
+    ageBand?: 'under13' | 'teen' | 'adult';
+  };
+  if (body.ageBand !== 'teen' && body.ageBand !== 'adult') {
+    return json({ error: 'Friendly challenges are available for players 13 and older.' }, 403);
+  }
   const input = typeof body.input === 'string' ? body.input.slice(0, 1_000) : '';
   const elapsedMs = Number(body.elapsedMs);
   const totalTypedChars = Number(body.totalTypedChars);
-  if (elapsedMs < 1_000 || elapsedMs > 121_000 || totalTypedChars < input.length || totalTypedChars > 2_000) return json({ error: 'Invalid challenge attempt.' }, 400);
+  const durationSec = Number(body.durationSec);
+  if (durationSec !== loaded.data.duration_sec || elapsedMs < 1_000 || elapsedMs > durationSec * 1_000 + 1_500 || totalTypedChars < input.length || totalTypedChars > 2_000) {
+    return json({ error: 'Invalid challenge attempt.' }, 400);
+  }
 
   const challenger = calculateMetrics(passage.text, input, elapsedMs, totalTypedChars);
   const creator = calculateMetrics(passage.text, loaded.data.creator_input, loaded.data.creator_elapsed_ms, loaded.data.creator_total_typed_chars);
   const decision = decideWinner(challenger, creator);
   const outcome = decision === 'a' ? 'win' : decision === 'b' ? 'loss' : 'draw';
-  if (!user) return json({ outcome, challenger, creator, creatorHandle: loaded.data.creator_handle, saved: false, xpEarned: 10, xpMultiplier: 1, doubleXpUntil: null });
+  const riskStatus = runRiskStatus(challenger.grossWpm, totalTypedChars, elapsedMs);
+  if (!user) {
+    return json({ outcome, challenger, creator, creatorHandle: loaded.data.creator_handle, saved: false, xpEarned: 10, xpMultiplier: 1, doubleXpUntil: null, riskStatus });
+  }
+  if (typeof body.runTicketId !== 'string') return json({ error: 'Start a new authorized run before submitting.' }, 409);
+  await consumeRunTicket(user, body.runTicketId, 'challenge', passage.id, durationSec, elapsedMs);
+  if (riskStatus === 'review') {
+    return json({ outcome, challenger, creator, creatorHandle: loaded.data.creator_handle, saved: false, xpEarned: 0, xpMultiplier: 1, doubleXpUntil: null, riskStatus });
+  }
 
   const player = await ensurePlayer(user);
   const xpMultiplier = player.double_xp_until && Date.parse(player.double_xp_until) > Date.now() ? 2 : 1;
   const xpEarned = 10 * xpMultiplier;
   const boostUntil = new Date(Date.now() + DOUBLE_XP_MS).toISOString();
-  const recorded = await db.rpc('tr_record_challenge_attempt', {
-    p_challenge_id: loaded.data.id, p_user_id: player.id, p_input: input,
-    p_elapsed_ms: Math.round(elapsedMs), p_total_typed_chars: Math.round(totalTypedChars),
-    p_net_wpm: challenger.netWpm, p_accuracy: challenger.accuracy,
-    p_performance_score: challenger.performanceScore, p_outcome: outcome,
-    p_xp_earned: xpEarned, p_boost_until: boostUntil,
+  const recorded = await admin.rpc('tr_record_challenge_attempt', {
+    p_challenge_id: loaded.data.id,
+    p_user_id: player.id,
+    p_input: input,
+    p_elapsed_ms: Math.round(elapsedMs),
+    p_total_typed_chars: Math.round(totalTypedChars),
+    p_net_wpm: challenger.netWpm,
+    p_accuracy: challenger.accuracy,
+    p_performance_score: challenger.performanceScore,
+    p_outcome: outcome,
+    p_xp_earned: xpEarned,
+    p_boost_until: boostUntil,
     p_creator_user_id: loaded.data.creator_user_id,
   });
   if (recorded.error) throw recorded.error;
   return json({
-    outcome, challenger, creator, creatorHandle: loaded.data.creator_handle, saved: true,
-    xpEarned, xpMultiplier,
+    outcome,
+    challenger,
+    creator,
+    creatorHandle: loaded.data.creator_handle,
+    saved: true,
+    xpEarned,
+    xpMultiplier,
+    riskStatus,
     doubleXpUntil: outcome === 'win' ? boostUntil : player.double_xp_until,
   });
+}
+
+async function updateAccount(request: Request, user: User | null) {
+  if (!user) return json({ error: 'Sign in to update your account.' }, 401);
+  const body = await request.json() as { handle?: string };
+  const handle = typeof body.handle === 'string' ? body.handle.trim() : '';
+  if (!/^[A-Za-z0-9_]{3,18}$/.test(handle)) {
+    return json({ error: 'Use 3–18 letters, numbers, or underscores.' }, 400);
+  }
+  const reserved = ['admin', 'moderator', 'typerival', 'support', 'official'];
+  if (reserved.some((word) => handle.toLowerCase().includes(word))) {
+    return json({ error: 'Choose a different public handle.' }, 400);
+  }
+  const updated = await admin.from('players').update({ handle, updated_at: new Date().toISOString() })
+    .eq('id', user.id).select('handle').single();
+  if (updated.error?.code === '23505') return json({ error: 'That handle is already taken.' }, 409);
+  if (updated.error) throw updated.error;
+  await admin.from('challenges').update({ creator_handle: handle })
+    .eq('creator_user_id', user.id).gt('expires_at', new Date().toISOString());
+  return json({ handle: updated.data.handle });
+}
+
+async function exportAccount(user: User | null) {
+  if (!user) return json({ error: 'Sign in to export your account.' }, 401);
+  const [profile, sessions, challenges, attempts] = await Promise.all([
+    admin.from('players').select('*').eq('id', user.id).maybeSingle(),
+    admin.from('sessions').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
+    admin.from('challenges').select('*').eq('creator_user_id', user.id).order('created_at', { ascending: false }),
+    admin.from('challenge_attempts').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
+  ]);
+  const failed = [profile, sessions, challenges, attempts].find((result) => result.error);
+  if (failed?.error) throw failed.error;
+  const exportedAt = new Date().toISOString();
+  return new Response(JSON.stringify({
+    exportedAt,
+    account: { id: user.id, email: user.email, createdAt: user.created_at },
+    profile: profile.data,
+    sessions: sessions.data,
+    challenges: challenges.data,
+    challengeAttempts: attempts.data,
+  }, null, 2), {
+    status: 200,
+    headers: {
+      ...CORS,
+      'content-type': 'application/json; charset=utf-8',
+      'content-disposition': `attachment; filename="typerival-export-${exportedAt.slice(0, 10)}.json"`,
+      'cache-control': 'no-store',
+    },
+  });
+}
+
+async function deleteAccount(user: User | null) {
+  if (!user) return json({ error: 'Sign in to delete your account.' }, 401);
+  const deleted = await admin.auth.admin.deleteUser(user.id, false);
+  if (deleted.error) throw deleted.error;
+  return json({ deleted: true });
+}
+
+async function withinRateLimit(request: Request, user: User | null, action: string) {
+  const rules: Record<string, { limit: number; seconds: number }> = {
+    bootstrap: { limit: 120, seconds: 60 },
+    runs: { limit: 20, seconds: 60 },
+    sessions: { limit: 20, seconds: 60 },
+    challenges: { limit: 40, seconds: 60 },
+    account: { limit: 10, seconds: 60 },
+  };
+  const rule = rules[action] ?? { limit: 60, seconds: 60 };
+  const forwarded = request.headers.get('x-typerival-client-ip')
+    ?? request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+    ?? request.headers.get('cf-connecting-ip')
+    ?? 'unknown';
+  const identity = user ? `user:${user.id}` : `ip:${await sha256(forwarded)}`;
+  const result = await admin.rpc('tr_consume_rate_limit', {
+    p_identifier_hash: identity,
+    p_action: action,
+    p_limit: rule.limit,
+    p_window_seconds: rule.seconds,
+  });
+  if (result.error) throw result.error;
+  return result.data === true;
+}
+
+function currentRankedPassage() {
+  return PASSAGES[Math.floor(Date.now() / 900_000) % PASSAGES.length] ?? PASSAGES[0]!;
+}
+
+function runRiskStatus(grossWpm: number, totalTypedChars: number, elapsedMs: number) {
+  return grossWpm > 260 || totalTypedChars / Math.max(1, elapsedMs / 1_000) > 24 ? 'review' : 'clear';
+}
+
+function nearlyEqual(a: number, b: number) {
+  return Math.abs(a - b) <= 0.11;
+}
+
+async function sha256(value: string) {
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(bytes)).map((entry) => entry.toString(16).padStart(2, '0')).join('');
 }
 
 function json(value: unknown, status = 200) {
@@ -356,10 +685,29 @@ function json(value: unknown, status = 200) {
   });
 }
 
-function firstString(...values: unknown[]) {
-  return values.find((value): value is string => typeof value === 'string' && value.trim().length > 0)?.trim();
+function withRequestId(response: Response, requestId: string) {
+  response.headers.set('x-request-id', requestId);
+  return response;
+}
+
+function finish(response: Response, requestId: string, route: string, startedAt: number, user: User | null) {
+  console.log(JSON.stringify({
+    event: 'typerival_request',
+    requestId,
+    route,
+    status: response.status,
+    durationMs: Date.now() - startedAt,
+    authenticated: Boolean(user),
+  }));
+  return withRequestId(response, requestId);
 }
 
 function round(value: number) {
   return Math.round(value * 10) / 10;
+}
+
+class RequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
 }

@@ -17,7 +17,7 @@ import {
   type SupabasePublicConfig,
 } from '../lib/supabase-browser';
 
-type Screen = 'home' | 'setup' | 'race' | 'results' | 'leaderboard' | 'legal';
+type Screen = 'home' | 'setup' | 'race' | 'results' | 'leaderboard' | 'account' | 'legal';
 type AgeBand = 'under13' | 'teen' | 'adult';
 
 type Player = {
@@ -55,6 +55,14 @@ type LocalRaceResult = {
   elapsedMs: number;
   totalTypedChars: number;
   metrics: TypingMetrics;
+};
+
+type RunTicket = {
+  runTicketId: string;
+  passageId: string;
+  durationSec: number;
+  issuedAt: string;
+  expiresAt: string;
 };
 
 type SavedResult = LocalRaceResult & {
@@ -97,6 +105,7 @@ type SessionApiResult = {
   doubleXpUntil?: string | null;
   saved: boolean;
   riskStatus?: string;
+  sessionId?: string;
   match?: SavedResult['match'];
 };
 
@@ -126,6 +135,7 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
   const [bootstrap, setBootstrap] = useState<Bootstrap>(defaultBootstrap);
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [message, setMessage] = useState('');
   const [ageBand, setAgeBand] = useState<AgeBand | null>(null);
   const [challenge, setChallenge] = useState<Challenge | null>(null);
@@ -133,7 +143,9 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
   const [localStats, setLocalStats] = useState<PracticeStats>(emptyStats);
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<'signin' | 'update'>('signin');
+  const [runTicket, setRunTicket] = useState<RunTicket | null>(null);
   const ageBandRef = useRef<AgeBand | null>(null);
+  const closeAuth = useCallback(() => setAuthOpen(false), []);
 
   const refreshBootstrap = useCallback(async (currentAge: AgeBand | null) => {
     try {
@@ -254,7 +266,51 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
     const rankedPassage = PASSAGES[Math.floor(Date.now() / 900_000) % PASSAGES.length] ?? PASSAGES[0]!;
     setPassage(nextMode === 'ranked' ? rankedPassage : choosePassage(passage.id));
     setChallenge(null);
+    setRunTicket(null);
     setScreen('setup');
+  };
+
+  const startRace = async () => {
+    setMessage('');
+    if (!bootstrap.user.signedIn || ageBand === 'under13') {
+      setRunTicket(null);
+      setScreen('race');
+      return;
+    }
+    setStarting(true);
+    try {
+      const response = await authFetch('/api/runs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode, passageId: passage.id, durationSec, ageBand }),
+      });
+      const data = await response.json() as RunTicket & { error?: string };
+      if (!response.ok) throw new Error(data.error ?? 'The run could not be authorized.');
+      const authorizedPassage = PASSAGES.find((entry) => entry.id === data.passageId);
+      if (!authorizedPassage) throw new Error('The authorized passage is unavailable.');
+      setPassage(authorizedPassage);
+      setDurationSec(data.durationSec);
+      setRunTicket(data);
+      setScreen('race');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'The run could not be started.');
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const armRun = async () => {
+    if (!runTicket) return;
+    const response = await authFetch(`/api/runs/${encodeURIComponent(runTicket.runTicketId)}`, {
+      method: 'PATCH',
+    });
+    const data = await response.json() as { error?: string; startedAt?: string; expiresAt?: string };
+    if (!response.ok) throw new Error(data.error ?? 'The run countdown could not be started.');
+    setRunTicket((current) => current ? {
+      ...current,
+      issuedAt: data.startedAt ?? current.issuedAt,
+      expiresAt: data.expiresAt ?? current.expiresAt,
+    } : current);
   };
 
   const completeRace = async (localResult: LocalRaceResult) => {
@@ -274,7 +330,12 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
         const response = await authFetch(`/api/challenges/${challenge.code}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ ...localResult, ageBand }),
+          body: JSON.stringify({
+            ...localResult,
+            durationSec,
+            runTicketId: runTicket?.runTicketId,
+            ageBand,
+          }),
         });
         const data = await response.json() as ChallengeAttemptApiResult;
         if (!response.ok) throw new Error(data.error ?? 'Challenge failed');
@@ -298,6 +359,8 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
             input: localResult.input,
             elapsedMs: localResult.elapsedMs,
             totalTypedChars: localResult.totalTypedChars,
+            durationSec,
+            runTicketId: runTicket?.runTicketId,
             ageBand,
           }),
         });
@@ -310,6 +373,7 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               passageId: localResult.passage.id,
+              sessionId: data.sessionId,
               durationSec,
               input: localResult.input,
               elapsedMs: localResult.elapsedMs,
@@ -333,7 +397,8 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
   const runAgain = () => {
     if (mode !== 'challenge') setPassage((current) => choosePassage(current.id));
     setResult(null);
-    setScreen('race');
+    setRunTicket(null);
+    setScreen('setup');
   };
 
   const saveAge = async (nextAge: AgeBand) => {
@@ -359,6 +424,7 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
     setMode('practice');
     setChallenge(null);
     setResult(null);
+    setRunTicket(null);
     window.history.replaceState({}, '', '/');
   };
 
@@ -370,6 +436,7 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
         onHome={goHome}
         onLeaderboard={() => setScreen('leaderboard')}
         onInstall={install}
+        onAccount={() => setScreen('account')}
         onSignIn={openAuth}
         onSignOut={() => void signOut()}
       />
@@ -393,7 +460,8 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
           challenge={challenge}
           onDuration={setDurationSec}
           onBack={goHome}
-          onStart={() => setScreen('race')}
+          onStart={() => void startRace()}
+          starting={starting}
         />
       )}
 
@@ -403,6 +471,7 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
           mode={mode}
           durationSec={durationSec}
           passage={passage}
+          onArm={armRun}
           onCancel={() => setScreen('setup')}
           onComplete={completeRace}
         />
@@ -421,11 +490,29 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
       )}
 
       {screen === 'leaderboard' && <Leaderboard data={bootstrap} onBack={goHome} />}
+      {screen === 'account' && bootstrap.user.signedIn && (
+        <Account
+          player={bootstrap.user}
+          onBack={goHome}
+          onUpdated={() => void refreshBootstrap(ageBand)}
+          onDeleted={async () => {
+            await getSupabaseBrowserClient()?.auth.signOut();
+            setBootstrap(defaultBootstrap);
+            setScreen('home');
+            setMessage('Your TypeRival account and saved data were deleted.');
+          }}
+        />
+      )}
       {screen === 'legal' && <Legal onBack={goHome} />}
 
       <footer className="site-footer">
         <span>© 2026 TypeRival · Working title</span>
-        <button onClick={() => setScreen('legal')}>Rules, privacy & safety</button>
+        <span className="footer-links">
+          <a href="/terms">Terms</a>
+          <a href="/privacy">Privacy</a>
+          <a href="/rules">Fair play</a>
+          <button onClick={() => setScreen('legal')}>Summary</button>
+        </span>
         <span>Free-to-play MVP · No cash prizes</span>
       </footer>
 
@@ -435,7 +522,7 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
           key={authMode}
           open
           initialMode={authMode}
-          onClose={() => setAuthOpen(false)}
+          onClose={closeAuth}
           onAuthenticated={authenticated}
         />
       )}
@@ -444,12 +531,13 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
   );
 }
 
-function Header({ player, loading, onHome, onLeaderboard, onInstall, onSignIn, onSignOut }: {
+function Header({ player, loading, onHome, onLeaderboard, onInstall, onAccount, onSignIn, onSignOut }: {
   player: Player;
   loading: boolean;
   onHome: () => void;
   onLeaderboard: () => void;
   onInstall: () => void;
+  onAccount: () => void;
   onSignIn: () => void;
   onSignOut: () => void;
 }) {
@@ -462,7 +550,10 @@ function Header({ player, loading, onHome, onLeaderboard, onInstall, onSignIn, o
         <button onClick={onLeaderboard}>Leaderboard</button>
         <button onClick={onInstall}>Install</button>
         {player.signedIn ? (
-          <button className="nav-cta" onClick={onSignOut}>Sign out</button>
+          <>
+            <button className="nav-cta" onClick={onAccount}>Account</button>
+            <button className="nav-signout" onClick={onSignOut}>Sign out</button>
+          </>
         ) : (
           <button className="nav-cta" onClick={onSignIn}>Sign in to save</button>
         )}
@@ -541,13 +632,14 @@ function LaunchCard({ number, title, label, description, action, onClick, featur
   );
 }
 
-function Setup({ mode, durationSec, challenge, onDuration, onBack, onStart }: {
+function Setup({ mode, durationSec, challenge, onDuration, onBack, onStart, starting }: {
   mode: GameMode;
   durationSec: number;
   challenge: Challenge | null;
   onDuration: (duration: number) => void;
   onBack: () => void;
   onStart: () => void;
+  starting: boolean;
 }) {
   const title = mode === 'ranked' ? 'Bank a ranked run.' : mode === 'friendly' ? 'Set the score to beat.' : mode === 'challenge' ? `${challenge?.creatorHandle ?? 'A rival'} called you out.` : 'Set the clock. Find your flow.';
   return (
@@ -578,19 +670,23 @@ function Setup({ mode, durationSec, challenge, onDuration, onBack, onStart }: {
         </div>
         <div className="setup-row"><span><small>PASSAGE</small><b>Balanced original prose</b></span><em>READY</em></div>
         <div className="setup-row"><span><small>INPUT</small><b>Touch or physical keyboard</b></span><em>MVP OPEN CLASS</em></div>
-        <button className="primary-button setup-start" onClick={onStart}>START {durationSec}-SECOND RUN</button>
+        <button className="primary-button setup-start" onClick={onStart} disabled={starting}>{starting ? 'AUTHORIZING RUN…' : `START ${durationSec}-SECOND RUN`}</button>
       </section>
     </main>
   );
 }
 
-function RaceView({ mode, durationSec, passage, onCancel, onComplete }: {
+function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
   mode: GameMode;
   durationSec: number;
   passage: Passage;
+  onArm: () => Promise<void>;
   onCancel: () => void;
   onComplete: (result: LocalRaceResult) => void;
 }) {
+  const [armed, setArmed] = useState(false);
+  const [arming, setArming] = useState(false);
+  const [armError, setArmError] = useState('');
   const [countdown, setCountdown] = useState(3);
   const [active, setActive] = useState(false);
   const [input, setInput] = useState('');
@@ -612,7 +708,7 @@ function RaceView({ mode, durationSec, passage, onCancel, onComplete }: {
   }, [mode, onComplete, passage]);
 
   useEffect(() => {
-    if (countdown <= 0) return;
+    if (!armed || countdown <= 0) return;
     const timer = window.setTimeout(() => {
       if (countdown === 1) {
         startedAt.current = Date.now();
@@ -624,7 +720,7 @@ function RaceView({ mode, durationSec, passage, onCancel, onComplete }: {
       }
     }, 850);
     return () => window.clearTimeout(timer);
-  }, [countdown]);
+  }, [armed, countdown]);
 
   useEffect(() => {
     if (!active) return;
@@ -645,6 +741,19 @@ function RaceView({ mode, durationSec, passage, onCancel, onComplete }: {
     if (next === passage.text) finish(next, nextTotal, Date.now() - startedAt.current);
   };
 
+  const armRace = async () => {
+    inputRef.current?.focus();
+    setArming(true); setArmError('');
+    try {
+      await onArm();
+      setArmed(true);
+    } catch (error) {
+      setArmError(error instanceof Error ? error.message : 'The countdown could not start.');
+    } finally {
+      setArming(false);
+    }
+  };
+
   return (
     <main className="race-page game-page" onClick={() => inputRef.current?.focus()}>
       <header className="race-top"><button onClick={(event) => { event.stopPropagation(); onCancel(); }}>✕ EXIT</button><span>{mode.toUpperCase()} · {mode === 'ranked' ? 'RANKED BETA' : 'OPEN INPUT'}</span><small>TAP PASSAGE TO REFOCUS</small></header>
@@ -656,8 +765,10 @@ function RaceView({ mode, durationSec, passage, onCancel, onComplete }: {
         <RaceMetric value={`${input.length}/${passage.text.length}`} label="PROGRESS" />
       </section>
       <section className="passage-card">
-        {!active ? (
-          <div className="countdown"><small>GET READY</small><b>{countdown || 'GO'}</b><span>The race begins automatically.</span></div>
+        {!armed ? (
+          <div className="countdown ready-prompt"><small>KEYBOARD CHECK</small><b>READY?</b><span>Tap once to open your keyboard and begin the countdown.</span>{armError && <span className="inline-error" role="alert">{armError}</span>}<button className="primary-button" onClick={() => void armRace()} disabled={arming}>{arming ? 'CONNECTING…' : 'TAP TO START'}</button></div>
+        ) : !active ? (
+          <div className="countdown" aria-live="assertive"><small>GET READY</small><b>{countdown || 'GO'}</b><span>Stay focused—the clock starts at GO.</span></div>
         ) : (
           <div className="passage-wrap">
             <p aria-label={`Typing passage: ${passage.text}`}>
@@ -681,6 +792,7 @@ function RaceView({ mode, durationSec, passage, onCancel, onComplete }: {
         autoComplete="off"
         autoCorrect="off"
         autoCapitalize="off"
+        inputMode="text"
         spellCheck={false}
         aria-label="Race typing input"
       />
@@ -737,13 +849,108 @@ function Results({ result, saving, signedIn, message, onAgain, onHome, onSignIn 
 function Leaderboard({ data, onBack }: { data: Bootstrap; onBack: () => void }) {
   return (
     <main className="leaderboard-page">
-      <header><div><span className="eyebrow">ROLLING 30 DAYS</span><h1>Open leaderboard</h1><p>Verified touch and physical-keyboard sessions. Full qualification begins at 10 runs across 5 active days.</p></div><button className="back-button" onClick={onBack}>← BACK HOME</button></header>
+      <header><div><span className="eyebrow">ROLLING 30 DAYS</span><h1>Open leaderboard</h1><p>You can hit the leaderboard as soon as your first run is complete. Clear, signed-in results count toward your rolling 30-day averages.</p></div><button className="back-button" onClick={onBack}>← BACK HOME</button></header>
       <section className="leaderboard-table">
         <div className="leaderboard-head"><span>RANK</span><span>RIVAL</span><span>AVG WPM</span><span>ACCURACY</span><span>RUNS</span><span>RATING</span></div>
         {data.leaderboard.length === 0 ? <div className="empty-board"><b>The ladder is open.</b><span>Complete a signed-in run to claim the first spot.</span></div> : data.leaderboard.map((entry, index) => (
-          <div className="leaderboard-row" key={entry.handle}><span>#{index + 1}</span><span><i>{entry.handle.slice(0, 1).toUpperCase()}</i><b>{entry.handle}</b></span><span>{entry.averageWpm}</span><span>{entry.accuracy}%</span><span>{entry.sessions}</span><span>{Math.round(entry.rating)}</span></div>
+          <div className="leaderboard-row" key={entry.handle}><span data-label="RANK">#{index + 1}</span><span data-label="RIVAL"><i>{entry.handle.slice(0, 1).toUpperCase()}</i><b>{entry.handle}</b></span><span data-label="AVG WPM">{entry.averageWpm}</span><span data-label="ACCURACY">{entry.accuracy}%</span><span data-label="RUNS">{entry.sessions}</span><span data-label="RATING">{Math.round(entry.rating)}</span></div>
         ))}
       </section>
+    </main>
+  );
+}
+
+function Account({ player, onBack, onUpdated, onDeleted }: {
+  player: Player;
+  onBack: () => void;
+  onUpdated: () => void;
+  onDeleted: () => void | Promise<void>;
+}) {
+  const [handle, setHandle] = useState(player.handle ?? '');
+  const [status, setStatus] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const saveHandle = async () => {
+    setBusy(true); setStatus('');
+    try {
+      const response = await authFetch('/api/account', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ handle }),
+      });
+      const data = await response.json() as { handle?: string; error?: string };
+      if (!response.ok) throw new Error(data.error ?? 'Handle update failed.');
+      setHandle(data.handle ?? handle);
+      setStatus('Public handle updated.');
+      onUpdated();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Handle update failed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const downloadExport = async () => {
+    setBusy(true); setStatus('');
+    try {
+      const response = await authFetch('/api/account/export', { cache: 'no-store' });
+      if (!response.ok) {
+        const data = await response.json() as { error?: string };
+        throw new Error(data.error ?? 'Export failed.');
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `typerival-export-${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setStatus('Your data export was downloaded.');
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Export failed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteProfile = async () => {
+    const confirmation = window.prompt('This permanently deletes your account, results, XP, rating, and challenges. Type DELETE to continue.');
+    if (confirmation !== 'DELETE') return;
+    setBusy(true); setStatus('');
+    try {
+      const response = await authFetch('/api/account', { method: 'DELETE' });
+      const data = await response.json() as { deleted?: boolean; error?: string };
+      if (!response.ok || !data.deleted) throw new Error(data.error ?? 'Account deletion failed.');
+      await onDeleted();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Account deletion failed.');
+      setBusy(false);
+    }
+  };
+
+  return (
+    <main className="account-page legal-page">
+      <button className="back-button" onClick={onBack}>← BACK HOME</button>
+      <span className="eyebrow">ACCOUNT & PRIVACY</span><h1>Control your rival profile.</h1>
+      <div className="account-grid">
+        <section className="account-card">
+          <h2>Public handle</h2>
+          <p>Your handle is visible on leaderboards and challenges. Use 3–18 letters, numbers, or underscores—never your email or full name.</p>
+          <label><span>HANDLE</span><input value={handle} maxLength={18} onChange={(event) => setHandle(event.target.value)} autoComplete="nickname" /></label>
+          <button className="primary-button" onClick={() => void saveHandle()} disabled={busy}>SAVE HANDLE</button>
+        </section>
+        <section className="account-card">
+          <h2>Your data</h2>
+          <p>Download a JSON copy of your profile, saved runs, friendly challenges, and challenge attempts.</p>
+          <button className="secondary-button" onClick={() => void downloadExport()} disabled={busy}>DOWNLOAD MY DATA</button>
+        </section>
+        <section className="account-card danger-card">
+          <h2>Delete account</h2>
+          <p>This permanently removes your account and saved TypeRival data. This action cannot be undone.</p>
+          <button className="danger-button" onClick={() => void deleteProfile()} disabled={busy}>DELETE MY ACCOUNT</button>
+        </section>
+      </div>
+      {status && <div className="account-status" role="status">{status}</div>}
     </main>
   );
 }
@@ -752,23 +959,51 @@ function Legal({ onBack }: { onBack: () => void }) {
   return (
     <main className="legal-page">
       <button className="back-button" onClick={onBack}>← BACK HOME</button>
-      <span className="eyebrow">LAUNCH RULES</span><h1>Fair play comes first.</h1>
+      <span className="eyebrow">TERMS, PRIVACY & FAIR PLAY · UPDATED AUGUST 28, 2026</span><h1>Fair play comes first.</h1>
       <div className="legal-grid">
-        <article><h2>Free MVP</h2><p>TypeRival currently has no entry fees, wagers, cash wallet, purchasable competitive advantage, or cash prizes. XP has no cash value and cannot be transferred or redeemed.</p></article>
-        <article><h2>Scoring</h2><p>Net WPM is based on correct characters and errors. A player below 90% accuracy cannot defeat a player at or above 90%. Remaining ties use performance score, then accuracy.</p></article>
-        <article><h2>Integrity</h2><p>Paste and common writing assistance are disabled where browsers allow. Server validation can hold implausible runs for review. Automated typing, collusion, and result manipulation are prohibited.</p></article>
-        <article><h2>Age & privacy</h2><p>Under-13 visitors receive private device-only practice. Online Junior profiles are not part of this MVP. Signed-in gameplay stores a pseudonymous handle, results, rating, and progression—not message content or precise location.</p></article>
-        <article><h2>Challenges</h2><p>Friendly links expire after seven days. Anyone with a link can attempt the same passage and duration. Challenge results do not change ranked rating.</p></article>
-        <article><h2>Future prizes</h2><p>Any future sponsor-funded skill event will launch separately with official rules, eligibility checks, jurisdiction controls, and professional legal review. No prize event is active today.</p></article>
+        <article><h2>Agreement and eligibility</h2><p>By creating an account or using online competition, you agree to these MVP terms. Players must be at least 13 to create an account. Visitors under 13 may use private, device-only practice and must not submit personal information.</p></article>
+        <article><h2>Free MVP</h2><p>TypeRival currently has no entry fees, wagers, cash wallet, purchasable competitive advantage, or cash prizes. XP has no cash value and cannot be transferred, sold, or redeemed.</p></article>
+        <article><h2>Scoring</h2><p>Net WPM is based on correct characters and errors. A player below 90% accuracy cannot defeat a player at or above 90%. Remaining ties use performance score, then accuracy. Clear signed-in runs can enter the rolling 30-day leaderboard immediately.</p></article>
+        <article><h2>Fair play</h2><p>Automated typing, scripts, macros, emulators used to falsify input, account sharing, collusion, exploiting bugs, and manipulating results are prohibited. TypeRival may hold, remove, or invalidate suspicious results and restrict accounts that threaten the competition.</p></article>
+        <article><h2>Information collected</h2><p>For signed-in players, TypeRival stores an account identifier, email through the authentication provider, public handle, run metrics, passage and timing data, XP, rating, match outcomes, and challenge activity. Operational systems may process IP addresses, device details, and request logs for security and reliability.</p></article>
+        <article><h2>How information is used</h2><p>Information is used to authenticate players, save progress, calculate rankings, operate challenges, prevent abuse, troubleshoot failures, and improve the service. TypeRival does not sell personal information or use gameplay data for third-party advertising in this MVP.</p></article>
+        <article><h2>Sharing and processors</h2><p>Supabase processes authentication and database data, while Vercel hosts the web application and operational logs. Google processes information when Google sign-in is selected. Data may also be disclosed when required by law or necessary to protect users and the service.</p></article>
+        <article><h2>Retention and control</h2><p>Saved gameplay remains while an account is active unless operational or legal needs require a different period. Players can download their TypeRival data and permanently delete their account from the Account page. Local-only practice can be removed by clearing browser site data.</p></article>
+        <article><h2>Security and availability</h2><p>TypeRival uses access controls, server validation, encrypted network connections, and rate limits, but no online service can guarantee absolute security or uninterrupted availability. The beta may change, pause, or remove features as it develops.</p></article>
+        <article><h2>Challenges and conduct</h2><p>Friendly links expire after seven days and may be shared by anyone who receives them. Challenge results do not change ranked rating. Do not use handles or shared links to impersonate, harass, threaten, or expose another person’s private information.</p></article>
+        <article><h2>Account enforcement</h2><p>Accounts or results may be limited or removed for cheating, abuse, unlawful conduct, security threats, or repeated violations. Players remain responsible for activity performed through their account and should protect their sign-in credentials.</p></article>
+        <article><h2>Future prizes</h2><p>Any future sponsor-funded skill event will launch separately with official rules, eligibility and identity checks, jurisdiction controls, tax disclosures, and professional legal review. No prize event is active today.</p></article>
+        <article><h2>Disclaimers</h2><p>The MVP is provided on an “as available” basis to the extent permitted by law. Rankings, XP, and availability may change during beta testing. Nothing here waives rights that cannot legally be waived.</p></article>
+        <article><h2>Changes and questions</h2><p>Material changes will be reflected by a new update date in this notice. Questions, privacy requests, and appeals should be submitted through the official TypeRival support channel published with the service.</p></article>
       </div>
     </main>
   );
 }
 
 function AgeGate({ onChoose }: { onChoose: (age: AgeBand) => void }) {
+  const modalRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const modal = modalRef.current;
+    const first = modal?.querySelector<HTMLButtonElement>('button');
+    first?.focus();
+    const trap = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab' || !modal) return;
+      const controls = Array.from(modal.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'));
+      if (controls.length === 0) return;
+      const firstControl = controls[0]!;
+      const lastControl = controls[controls.length - 1]!;
+      if (event.shiftKey && document.activeElement === firstControl) {
+        event.preventDefault(); lastControl.focus();
+      } else if (!event.shiftKey && document.activeElement === lastControl) {
+        event.preventDefault(); firstControl.focus();
+      }
+    };
+    document.addEventListener('keydown', trap);
+    return () => document.removeEventListener('keydown', trap);
+  }, []);
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="age-title">
-      <section className="age-modal"><span className="wordmark-mark">TR</span><span className="eyebrow">ONE QUICK CHECK</span><h2 id="age-title">Which age range are you in?</h2><p>This keeps the competition and saved-data experience appropriate. We do not need your birthdate.</p>
+      <section className="age-modal" ref={modalRef}><span className="wordmark-mark">TR</span><span className="eyebrow">ONE QUICK CHECK</span><h2 id="age-title">Which age range are you in?</h2><p>This keeps the competition and saved-data experience appropriate. We do not need your birthdate.</p>
         <div className="age-options"><button onClick={() => onChoose('under13')}><b>Under 13</b><span>Private practice only</span></button><button onClick={() => onChoose('teen')}><b>13–17</b><span>Free competitive play</span></button><button onClick={() => onChoose('adult')}><b>18+</b><span>All free MVP modes</span></button></div>
         <small>You can change this later by clearing TypeRival’s local site data.</small>
       </section>

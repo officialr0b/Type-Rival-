@@ -2,8 +2,9 @@
   "name": "typerival-web",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@11.19.0",
   "engines": {
-    "node": "22.x"
+    "node": "24.x"
   },
   "scripts": {
     "dev": "next dev",
@@ -12,22 +13,23 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "typecheck": "tsc --noEmit",
     "test": "node --test lib/*.test.ts",
+    "audit": "pnpm audit --prod --audit-level high",
     "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm build"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.112.4",
-    "next": "16.2.6",
-    "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "next": "16.3.3",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "4.2.1",
-    "@types/node": "22.19.19",
-    "@types/react": "19.2.14",
-    "@types/react-dom": "19.2.3",
-    "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
-    "tailwindcss": "4.2.1",
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/node": "24.13.3",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.3.3",
+    "tailwindcss": "4.3.3",
     "typescript": "5.9.3"
   },
   "type": "module"
