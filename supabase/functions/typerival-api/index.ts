@@ -65,6 +65,8 @@ Deno.serve(async (request) => {
     let response: Response;
     if (request.method === 'GET' && route[0] === 'bootstrap') {
       response = json(await bootstrap(url, user));
+    } else if (request.method === 'POST' && route[0] === 'feedback') {
+      response = await submitFeedback(request, user);
     } else if (request.method === 'POST' && route[0] === 'runs') {
       response = await issueRun(request, user);
     } else if (request.method === 'PATCH' && route[0] === 'runs' && route[1]) {
@@ -93,14 +95,18 @@ Deno.serve(async (request) => {
     if (error instanceof RequestError) {
       return finish(json({ error: error.message }, error.status), requestId, routeName, startedAt, user);
     }
+    const stage = error instanceof ServiceError ? error.stage : `route:${routeName}`;
     console.error(JSON.stringify({
       event: 'typerival_api_failed',
       requestId,
       route: routeName,
+      stage,
       durationMs: Date.now() - startedAt,
       error: error instanceof Error ? error.message : String(error),
     }));
-    return finish(json({ error: 'TypeRival could not complete that request.' }, 500), requestId, routeName, startedAt, user);
+    const response = json({ error: 'TypeRival could not complete that request.' }, 500);
+    response.headers.set('x-typerival-error-stage', stage);
+    return finish(response, requestId, routeName, startedAt, user);
   }
 });
 
@@ -138,10 +144,17 @@ async function ensurePlayer(user: User): Promise<PlayerRow> {
 
 async function bootstrap(url: URL, user: User | null) {
   const eligible = ['teen', 'adult'].includes(url.searchParams.get('ageBand') ?? '');
-  const player = user && eligible ? await ensurePlayer(user) : null;
+  let player: PlayerRow | null = null;
+  if (user && eligible) {
+    try {
+      player = await ensurePlayer(user);
+    } catch (error) {
+      throw new ServiceError('bootstrap:player', error);
+    }
+  }
   const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000).toISOString();
   const boardQuery = await admin.rpc('tr_get_leaderboard', { p_cutoff: cutoff, p_limit: 10 });
-  if (boardQuery.error) throw boardQuery.error;
+  if (boardQuery.error) throw new ServiceError('bootstrap:leaderboard', boardQuery.error);
   const leaderboard = (boardQuery.data ?? []).map((entry: Record<string, unknown>) => ({
     handle: String(entry.handle),
     averageWpm: Number(entry.average_wpm),
@@ -154,7 +167,7 @@ async function bootstrap(url: URL, user: User | null) {
   let latestRanked: Record<string, unknown> | null = null;
   if (player) {
     const statsQuery = await admin.rpc('tr_get_player_stats', { p_user_id: player.id, p_cutoff: cutoff });
-    if (statsQuery.error) throw statsQuery.error;
+    if (statsQuery.error) throw new ServiceError('bootstrap:stats', statsQuery.error);
     const summary = Array.isArray(statsQuery.data) ? statsQuery.data[0] : statsQuery.data;
     if (summary) {
       stats = {
@@ -168,7 +181,7 @@ async function bootstrap(url: URL, user: User | null) {
 
     const latest = await admin.from('sessions').select('match_status, outcome, rating_delta, created_at')
       .eq('user_id', player.id).eq('mode', 'ranked').order('created_at', { ascending: false }).limit(1).maybeSingle();
-    if (latest.error) throw latest.error;
+    if (latest.error) throw new ServiceError('bootstrap:latest_ranked', latest.error);
     if (latest.data) {
       latestRanked = {
         matchStatus: latest.data.match_status,
@@ -601,16 +614,44 @@ async function updateAccount(request: Request, user: User | null) {
   return json({ handle: updated.data.handle });
 }
 
+async function submitFeedback(request: Request, user: User | null) {
+  const body = await request.json() as { category?: string; message?: string; device?: string };
+  const category = typeof body.category === 'string' ? body.category : '';
+  const message = typeof body.message === 'string' ? body.message.trim() : '';
+  const device = typeof body.device === 'string' ? body.device.trim() : '';
+  if (!['bug', 'idea', 'experience', 'other'].includes(category)) {
+    return json({ error: 'Choose a feedback category.' }, 400);
+  }
+  if (message.length < 10 || message.length > 2000) {
+    return json({ error: 'Feedback must be between 10 and 2,000 characters.' }, 400);
+  }
+  if (device.length > 120) {
+    return json({ error: 'Device and browser details must be 120 characters or fewer.' }, 400);
+  }
+  const inserted = await admin.from('feedback_submissions').insert({
+    user_id: user?.id ?? null,
+    category,
+    message,
+    device: device || null,
+  });
+  if (inserted.error) throw inserted.error;
+  return json({ received: true }, 201);
+}
+
 async function exportAccount(user: User | null) {
   if (!user) return json({ error: 'Sign in to export your account.' }, 401);
-  const [profile, sessions, challenges, attempts] = await Promise.all([
+  const [profile, sessions, challenges, attempts, feedback] = await Promise.all([
     admin.from('players').select('*').eq('id', user.id).maybeSingle(),
     admin.from('sessions').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
     admin.from('challenges').select('*').eq('creator_user_id', user.id).order('created_at', { ascending: false }),
     admin.from('challenge_attempts').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
+    admin.from('feedback_submissions').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
   ]);
-  const failed = [profile, sessions, challenges, attempts].find((result) => result.error);
-  if (failed?.error) throw failed.error;
+  if (profile.error) throw new ServiceError('account_export:profile', profile.error);
+  if (sessions.error) throw new ServiceError('account_export:sessions', sessions.error);
+  if (challenges.error) throw new ServiceError('account_export:challenges', challenges.error);
+  if (attempts.error) throw new ServiceError('account_export:attempts', attempts.error);
+  if (feedback.error) throw new ServiceError('account_export:feedback', feedback.error);
   const exportedAt = new Date().toISOString();
   return new Response(JSON.stringify({
     exportedAt,
@@ -619,6 +660,7 @@ async function exportAccount(user: User | null) {
     sessions: sessions.data,
     challenges: challenges.data,
     challengeAttempts: attempts.data,
+    feedback: feedback.data,
   }, null, 2), {
     status: 200,
     headers: {
@@ -644,6 +686,7 @@ async function withinRateLimit(request: Request, user: User | null, action: stri
     sessions: { limit: 20, seconds: 60 },
     challenges: { limit: 40, seconds: 60 },
     account: { limit: 10, seconds: 60 },
+    feedback: { limit: 5, seconds: 60 },
   };
   const rule = rules[action] ?? { limit: 60, seconds: 60 };
   const forwarded = request.headers.get('x-typerival-client-ip')
@@ -657,7 +700,7 @@ async function withinRateLimit(request: Request, user: User | null, action: stri
     p_limit: rule.limit,
     p_window_seconds: rule.seconds,
   });
-  if (result.error) throw result.error;
+  if (result.error) throw new ServiceError('rate_limit', result.error);
   return result.data === true;
 }
 
@@ -709,5 +752,12 @@ function round(value: number) {
 class RequestError extends Error {
   constructor(message: string, readonly status: number) {
     super(message);
+  }
+}
+
+class ServiceError extends Error {
+  constructor(readonly stage: string, cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = 'ServiceError';
   }
 }

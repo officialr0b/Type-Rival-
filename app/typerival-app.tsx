@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import AuthModal from './auth-modal';
 import {
   PASSAGES,
@@ -17,7 +17,7 @@ import {
   type SupabasePublicConfig,
 } from '../lib/supabase-browser';
 
-type Screen = 'home' | 'setup' | 'race' | 'results' | 'leaderboard' | 'account' | 'legal';
+type Screen = 'home' | 'setup' | 'race' | 'results' | 'leaderboard' | 'account' | 'legal' | 'feedback';
 type AgeBand = 'under13' | 'teen' | 'adult';
 
 type Player = {
@@ -164,10 +164,13 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
     const savedAge = window.localStorage.getItem('typerival-age-band') as AgeBand | null;
     const validAge = savedAge && ['under13', 'teen', 'adult'].includes(savedAge) ? savedAge : null;
     ageBandRef.current = validAge;
+    const client = getSupabaseBrowserClient();
     const initializeTimer = window.setTimeout(() => {
       if (validAge) setAgeBand(validAge);
       setLocalStats(readLocalStats());
-      void refreshBootstrap(validAge);
+      // Supabase emits INITIAL_SESSION once its persisted session is ready.
+      // Only fall back to a direct load when account services are not configured.
+      if (!client) void refreshBootstrap(validAge);
     }, 0);
 
     const params = new URLSearchParams(window.location.search);
@@ -206,7 +209,6 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
     };
     window.addEventListener('beforeinstallprompt', installHandler);
     if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');
-    const client = getSupabaseBrowserClient();
     const subscription = client?.auth.onAuthStateChange((event) => {
       if (event === 'PASSWORD_RECOVERY') {
         setAuthMode('update');
@@ -504,14 +506,16 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
         />
       )}
       {screen === 'legal' && <Legal onBack={goHome} />}
+      {screen === 'feedback' && <Feedback onBack={goHome} />}
 
       <footer className="site-footer">
-        <span>© 2026 TypeRival · Working title</span>
+        <span>© 2026 TypeRival</span>
         <span className="footer-links">
           <a href="/terms">Terms</a>
           <a href="/privacy">Privacy</a>
           <a href="/rules">Fair play</a>
           <button onClick={() => setScreen('legal')}>Summary</button>
+          <button onClick={() => setScreen('feedback')}>Feedback</button>
         </span>
         <span>Free-to-play MVP · No cash prizes</span>
       </footer>
@@ -526,7 +530,7 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
           onAuthenticated={authenticated}
         />
       )}
-      {(screen === 'setup' || screen === 'race') && <div className="rotate-gate"><b>ROTATE TO LANDSCAPE</b><span>TypeRival races are built for two-thumb play.</span></div>}
+      {(screen === 'setup' || screen === 'race') && <div className="rotate-gate"><b>ROTATE TO LANDSCAPE</b><span>TypeRival races are designed for focused landscape play.</span></div>}
     </>
   );
 }
@@ -578,7 +582,7 @@ function Home({ bootstrap, localStats, ageBand, onMode, onLeaderboard }: {
     <main className="home-page">
       <section className="home-hero">
         <div>
-          <span className="eyebrow">COMPETITIVE TYPING, BUILT FOR THUMBS</span>
+          <span className="eyebrow">COMPETITIVE TYPING, BUILT FOR SPEED</span>
           <h1>Type fast.<br/><i>Stay clean.</i><br/>Own the race.</h1>
           <p>Practice your speed, challenge a friend with one link, or bank a ranked run for a similarly skilled rival.</p>
           <div className="hero-actions">
@@ -599,7 +603,7 @@ function Home({ bootstrap, localStats, ageBand, onMode, onLeaderboard }: {
       </section>
 
       <section className="modes-section">
-        <div className="section-title"><span>CHOOSE YOUR MODE</span><small>{ageBand === 'under13' ? 'JUNIOR PRIVATE PRACTICE' : 'OPEN LADDER · TOUCH-FIRST BETA'}</small></div>
+        <div className="section-title"><span>CHOOSE YOUR MODE</span><small>{ageBand === 'under13' ? 'JUNIOR PRIVATE PRACTICE' : 'OPEN LADDER · EARLY BETA'}</small></div>
         <div className="launch-mode-grid">
           <LaunchCard number="01" title="Practice" label="LIVE" description="Build speed, accuracy, XP, and your rolling 30-day average." action="PRACTICE NOW" onClick={() => onMode('practice')} featured />
           <LaunchCard number="02" title="Ranked" label="ASYNC BETA" description="Bank one standardized run. We pair it with a rival on the same passage." action="RACE A RIVAL" onClick={() => onMode('ranked')} disabled={ageBand === 'under13'} />
@@ -976,6 +980,51 @@ function Legal({ onBack }: { onBack: () => void }) {
         <article><h2>Disclaimers</h2><p>The MVP is provided on an “as available” basis to the extent permitted by law. Rankings, XP, and availability may change during beta testing. Nothing here waives rights that cannot legally be waived.</p></article>
         <article><h2>Changes and questions</h2><p>Material changes will be reflected by a new update date in this notice. Questions, privacy requests, and appeals should be submitted through the official TypeRival support channel published with the service.</p></article>
       </div>
+    </main>
+  );
+}
+
+function Feedback({ onBack }: { onBack: () => void }) {
+  const [category, setCategory] = useState('experience');
+  const [device, setDevice] = useState('');
+  const [feedback, setFeedback] = useState('');
+  const [status, setStatus] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submitFeedback = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setBusy(true);
+    setStatus('');
+    try {
+      const response = await authFetch('/api/feedback', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ category, device, message: feedback }),
+      });
+      const data = await response.json() as { received?: boolean; error?: string };
+      if (!response.ok || !data.received) throw new Error(data.error ?? 'Feedback could not be sent.');
+      setFeedback('');
+      setStatus('Thanks — your feedback was sent.');
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Feedback could not be sent.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <main className="feedback-page legal-page">
+      <button className="back-button" onClick={onBack}>← BACK HOME</button>
+      <span className="eyebrow">BETA FEEDBACK</span><h1>Help shape TypeRival.</h1>
+      <p className="feedback-intro">Tell us what felt great, what was confusing, or what broke. Guest and signed-in feedback are both welcome.</p>
+      <form className="feedback-form" onSubmit={(event) => void submitFeedback(event)}>
+        <label><span>CATEGORY</span><select value={category} onChange={(event) => setCategory(event.target.value)}><option value="experience">Overall experience</option><option value="bug">Something broke</option><option value="idea">Feature idea</option><option value="other">Other</option></select></label>
+        <label><span>DEVICE & BROWSER <small>OPTIONAL</small></span><input value={device} maxLength={120} onChange={(event) => setDevice(event.target.value)} placeholder="Example: iPhone Safari or Windows Chrome" /></label>
+        <label><span>YOUR FEEDBACK</span><textarea value={feedback} minLength={10} maxLength={2000} required onChange={(event) => setFeedback(event.target.value)} placeholder="What happened? What did you expect? What should we improve?" /></label>
+        <small>Do not include passwords, private account information, or anything you would not want shared with the TypeRival team.</small>
+        <button className="primary-button" type="submit" disabled={busy}>{busy ? 'SENDING…' : 'SEND FEEDBACK'}</button>
+        {status && <div className="account-status" role="status">{status}</div>}
+      </form>
     </main>
   );
 }

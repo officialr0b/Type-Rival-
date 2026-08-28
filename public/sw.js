@@ -1,5 +1,5 @@
-const CACHE = 'typerival-shell-v5';
-const SHELL = ['/', '/manifest.webmanifest', '/icon.png', '/og.png'];
+const CACHE = 'typerival-shell-v6';
+const SHELL = ['/', '/manifest.webmanifest', '/icon.png', '/og.jpg'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));
