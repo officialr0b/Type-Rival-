@@ -37,6 +37,6 @@ https://YOUR_PROJECT_REF.supabase.co/auth/v1/callback
 
 Add the Google client ID and secret only in **Supabase → Authentication → Providers → Google**. Do not put them in TypeRival.
 
-## 4. Activate the hosted app
+## 4. Activate the Vercel app
 
-Add the project URL and publishable key to the TypeRival site's production environment, deploy the prepared version, and then make the site public so Supabase—not the outer Sites login—owns player sign-in.
+Add the project URL and publishable key to the TypeRival Vercel project's production and preview environments, then deploy. Add the final Vercel production URL to Supabase's allowed redirect URLs so Supabase owns player sign-in.

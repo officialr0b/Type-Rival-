@@ -83,6 +83,7 @@ type ChallengeAttemptApiResult = {
   outcome: 'win' | 'loss' | 'draw';
   creator: TypingMetrics;
   creatorHandle: string;
+  saved?: boolean;
   xpEarned: number;
   xpMultiplier: number;
   doubleXpUntil?: string | null;
@@ -241,8 +242,10 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
       setMessage('Junior online competition is coming later. Private practice is ready now.');
       return;
     }
-    if (nextMode === 'ranked' && !bootstrap.user.signedIn) {
-      setMessage('Sign in to bank a ranked run and receive a rating.');
+    if ((nextMode === 'ranked' || nextMode === 'friendly') && !bootstrap.user.signedIn) {
+      setMessage(nextMode === 'ranked'
+        ? 'Sign in to bank a ranked run and receive a rating.'
+        : 'Sign in to create a challenge link for a friend.');
       openAuth();
       return;
     }
@@ -279,7 +282,7 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
           ...localResult,
           xpEarned: data.xpEarned ?? 10,
           xpMultiplier: data.xpMultiplier ?? 1,
-          saved: true,
+          saved: data.saved ?? bootstrap.user.signedIn,
           challengeOutcome: data.outcome,
           creatorMetrics: data.creator,
           creatorHandle: data.creatorHandle,
