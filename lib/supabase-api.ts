@@ -31,12 +31,14 @@ export async function proxyTypeRivalApi(request: NextRequest, path: string) {
     });
     const requestId = response.headers.get('x-request-id') ?? crypto.randomUUID();
     if (!response.ok) {
-      console.error('supabase_api_upstream_error', {
+      const details = {
         path,
         method: request.method,
         status: response.status,
         requestId,
-      });
+      };
+      if (response.status >= 500) console.error('supabase_api_upstream_error', details);
+      else console.warn('supabase_api_client_rejected', details);
     }
     const responseHeaders = new Headers({
       'content-type': response.headers.get('content-type') ?? 'application/json',
