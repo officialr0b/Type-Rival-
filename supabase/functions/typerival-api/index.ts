@@ -727,7 +727,7 @@ async function freshPassageForPlayer(playerId: string, preferred: (typeof PASSAG
     .map((session) => session.passage_id as string)
     .filter((passageId) => activeIds.has(passageId));
   const seen = new Set(recentActiveIds);
-  if (!seen.has(preferred.id)) return preferred;
+  if (activeIds.has(preferred.id) && !seen.has(preferred.id)) return preferred;
 
   const unseen = PASSAGES.filter((passage) => !seen.has(passage.id));
   if (unseen.length > 0) return randomPassage(unseen);
