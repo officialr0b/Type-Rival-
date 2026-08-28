@@ -5,6 +5,9 @@ import { getSupabaseBrowserClient, isSupabaseConfigured } from '../lib/supabase-
 
 type AuthMode = 'signin' | 'signup' | 'forgot' | 'update';
 
+const canonicalSiteUrl = (process.env.NEXT_PUBLIC_SITE_URL ?? 'https://type-rival-five.vercel.app')
+  .replace(/\/+$/, '');
+
 export default function AuthModal({ open, initialMode = 'signin', onClose, onAuthenticated }: {
   open: boolean;
   initialMode?: AuthMode;
@@ -64,7 +67,7 @@ export default function AuthModal({ open, initialMode = 'signin', onClose, onAut
         const { data, error: authError } = await client.auth.signUp({
           email,
           password,
-          options: { emailRedirectTo: `${window.location.origin}/?auth=confirmed` },
+          options: { emailRedirectTo: `${canonicalSiteUrl}/?auth=confirmed` },
         });
         if (authError) throw authError;
         if (data.session) onAuthenticated();
@@ -75,7 +78,7 @@ export default function AuthModal({ open, initialMode = 'signin', onClose, onAut
         onAuthenticated();
       } else if (mode === 'forgot') {
         const { error: authError } = await client.auth.resetPasswordForEmail(email, {
-          redirectTo: `${window.location.origin}/?auth=reset`,
+          redirectTo: `${canonicalSiteUrl}/?auth=reset`,
         });
         if (authError) throw authError;
         setNotice('If that email has an account, a password-reset link is on the way.');
@@ -101,7 +104,7 @@ export default function AuthModal({ open, initialMode = 'signin', onClose, onAut
     setBusy(true); setError('');
     const { error: authError } = await client.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: window.location.origin },
+      options: { redirectTo: `${canonicalSiteUrl}/` },
     });
     if (authError) { setError(friendlyAuthError(authError)); setBusy(false); }
   };
