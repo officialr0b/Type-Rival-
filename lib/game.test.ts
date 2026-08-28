@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { PASSAGES, calculateMetrics, choosePassage, decideWinner, getPassage, xpForMode } from './game.ts';
+import { PASSAGES, calculateMetrics, choosePassage, decideWinner, getPassage, normalizeTypingInput, xpForMode } from './game.ts';
 import { updateGlicko2 } from './glicko2.ts';
 
 describe('TypeRival scoring', () => {
@@ -40,6 +40,11 @@ describe('TypeRival scoring', () => {
   it('keeps launch passages available only for existing challenge links', () => {
     assert.equal(PASSAGES.some((passage) => passage.id === 'steady-hands'), false);
     assert.equal(getPassage('steady-hands')?.id, 'steady-hands');
+  });
+
+  it('normalizes iOS smart punctuation without changing typed content', () => {
+    assert.equal(normalizeTypingInput('yesterday\u2019s trail'), "yesterday's trail");
+    assert.equal(normalizeTypingInput('\u201cReady\u201d\u00a0now'), '"Ready" now');
   });
 });
 

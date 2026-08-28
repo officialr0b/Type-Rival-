@@ -311,6 +311,13 @@ export function choosePassage(excludedIds: readonly string[] = []): Passage {
   return pool[Math.floor(Math.random() * pool.length)] ?? PASSAGES[0]!;
 }
 
+export function normalizeTypingInput(input: string): string {
+  return input
+    .replace(/[\u2018\u2019\u02bc\uff07]/g, "'")
+    .replace(/[\u201c\u201d\uff02]/g, '"')
+    .replace(/[\u00a0\u202f]/g, ' ');
+}
+
 export function calculateMetrics(
   passage: string,
   input: string,

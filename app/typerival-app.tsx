@@ -7,6 +7,7 @@ import {
   calculateMetrics,
   choosePassage,
   getPassage,
+  normalizeTypingInput,
   type GameMode,
   type Passage,
   type TypingMetrics,
@@ -745,6 +746,11 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
     if (!armed || countdown <= 0) return;
     const timer = window.setTimeout(() => {
       if (countdown === 1) {
+        if (inputRef.current) inputRef.current.value = '';
+        currentInput.current = '';
+        currentTotal.current = 0;
+        setInput('');
+        setTotalTypedChars(0);
         startedAt.current = Date.now();
         setActive(true);
         setCountdown(0);
@@ -767,8 +773,11 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
   }, [active, durationSec, finish]);
 
   const handleInput = (nextRaw: string) => {
-    if (!active || finished.current) return;
-    const next = nextRaw.replace(/[\r\n]/g, '').slice(0, passage.text.length + 20);
+    if (!active || finished.current) {
+      if (inputRef.current) inputRef.current.value = currentInput.current;
+      return;
+    }
+    const next = normalizeTypingInput(nextRaw).replace(/[\r\n]/g, '').slice(0, passage.text.length + 20);
     const nextTotal = totalTypedChars + Math.max(0, next.length - input.length);
     setInput(next); setTotalTypedChars(nextTotal);
     currentInput.current = next; currentTotal.current = nextTotal;
@@ -819,13 +828,14 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
         ref={inputRef}
         className="race-input"
         value={input}
+        onBeforeInput={(event) => { if (!active || finished.current) event.preventDefault(); }}
         onChange={(event) => handleInput(event.target.value)}
         onPaste={(event) => event.preventDefault()}
         onDrop={(event) => event.preventDefault()}
         onBlur={() => { if (active && !finished.current) setTimeout(() => inputRef.current?.focus(), 100); }}
         autoComplete="off"
         autoCorrect="off"
-        autoCapitalize="off"
+        autoCapitalize="none"
         inputMode="text"
         spellCheck={false}
         aria-label="Race typing input"
