@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { calculateMetrics, decideWinner, xpForMode } from './game.ts';
+import { PASSAGES, calculateMetrics, choosePassage, decideWinner, getPassage, xpForMode } from './game.ts';
 import { updateGlicko2 } from './glicko2.ts';
 
 describe('TypeRival scoring', () => {
@@ -23,6 +23,23 @@ describe('TypeRival scoring', () => {
     assert.equal(xpForMode('ranked'), 30);
     assert.equal(xpForMode('friendly'), 10);
     assert.equal(xpForMode('challenge'), 10);
+  });
+
+  it('ships a large active rotation with unique passages', () => {
+    assert.ok(PASSAGES.length >= 48);
+    assert.equal(new Set(PASSAGES.map((passage) => passage.id)).size, PASSAGES.length);
+    assert.equal(new Set(PASSAGES.map((passage) => passage.text)).size, PASSAGES.length);
+  });
+
+  it('selects the only passage that has not been excluded', () => {
+    const expected = PASSAGES.at(-1)!;
+    const excluded = PASSAGES.slice(0, -1).map((passage) => passage.id);
+    assert.equal(choosePassage(excluded).id, expected.id);
+  });
+
+  it('keeps launch passages available only for existing challenge links', () => {
+    assert.equal(PASSAGES.some((passage) => passage.id === 'steady-hands'), false);
+    assert.equal(getPassage('steady-hands')?.id, 'steady-hands');
   });
 });
 

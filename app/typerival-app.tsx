@@ -6,6 +6,7 @@ import {
   PASSAGES,
   calculateMetrics,
   choosePassage,
+  getPassage,
   type GameMode,
   type Passage,
   type TypingMetrics,
@@ -192,7 +193,7 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
           return response.json() as Promise<Challenge>;
         })
         .then((loaded) => {
-          const targetPassage = PASSAGES.find((entry) => entry.id === loaded.passageId);
+          const targetPassage = getPassage(loaded.passageId);
           if (!targetPassage) throw new Error('passage unavailable');
           setChallenge(loaded);
           setPassage(targetPassage);
@@ -266,7 +267,7 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
     setMode(nextMode);
     setDurationSec(nextMode === 'ranked' ? 45 : durationSec);
     const rankedPassage = PASSAGES[Math.floor(Date.now() / 900_000) % PASSAGES.length] ?? PASSAGES[0]!;
-    setPassage(nextMode === 'ranked' ? rankedPassage : choosePassage(passage.id));
+    setPassage(nextMode === 'ranked' ? rankedPassage : chooseFreshPassage(passage.id));
     setChallenge(null);
     setRunTicket(null);
     setScreen('setup');
@@ -288,7 +289,7 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
       });
       const data = await response.json() as RunTicket & { error?: string };
       if (!response.ok) throw new Error(data.error ?? 'The run could not be authorized.');
-      const authorizedPassage = PASSAGES.find((entry) => entry.id === data.passageId);
+      const authorizedPassage = getPassage(data.passageId);
       if (!authorizedPassage) throw new Error('The authorized passage is unavailable.');
       setPassage(authorizedPassage);
       setDurationSec(data.durationSec);
@@ -316,6 +317,7 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
   };
 
   const completeRace = async (localResult: LocalRaceResult) => {
+    rememberPassage(localResult.passage.id);
     setSaving(true);
     setScreen('results');
     setResult({ ...localResult, xpEarned: 0, saved: false });
@@ -397,7 +399,7 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
   };
 
   const runAgain = () => {
-    if (mode !== 'challenge') setPassage((current) => choosePassage(current.id));
+    if (mode !== 'challenge') setPassage((current) => chooseFreshPassage(current.id));
     setResult(null);
     setRunTicket(null);
     setScreen('setup');
@@ -1075,6 +1077,46 @@ function boostMinutes(value?: string | null) {
 }
 
 type StoredRun = { netWpm: number; accuracy: number; createdAt: string };
+
+const PASSAGE_HISTORY_KEY = 'typerival-passage-history-v1';
+
+function readPassageHistory(): string[] {
+  try {
+    const activeIds = new Set(PASSAGES.map((passage) => passage.id));
+    const saved = JSON.parse(window.localStorage.getItem(PASSAGE_HISTORY_KEY) ?? '[]') as unknown;
+    if (!Array.isArray(saved)) return [];
+    return saved.filter((id): id is string => typeof id === 'string' && activeIds.has(id));
+  } catch {
+    return [];
+  }
+}
+
+function rememberPassage(passageId: string) {
+  try {
+    const history = readPassageHistory().filter((id) => id !== passageId);
+    history.push(passageId);
+    window.localStorage.setItem(PASSAGE_HISTORY_KEY, JSON.stringify(history.slice(-PASSAGES.length)));
+  } catch {
+    // Passage selection still works when storage is unavailable.
+  }
+}
+
+function chooseFreshPassage(previousId?: string): Passage {
+  let history = readPassageHistory();
+  let excluded = [...new Set([...history, ...(previousId ? [previousId] : [])])];
+
+  if (excluded.length >= PASSAGES.length) {
+    history = previousId ? [previousId] : history.slice(-1);
+    try {
+      window.localStorage.setItem(PASSAGE_HISTORY_KEY, JSON.stringify(history));
+    } catch {
+      // The next cycle can still avoid the immediately previous passage in memory.
+    }
+    excluded = history;
+  }
+
+  return choosePassage(excluded);
+}
 
 function recordLocalRun(result: LocalRaceResult): PracticeStats {
   try {

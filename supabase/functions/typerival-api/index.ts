@@ -227,10 +227,17 @@ async function issueRun(request: Request, user: User | null) {
 
   const durationSec = body.mode === 'ranked' ? RANKED_DURATION_SEC : Number(body.durationSec);
   if (![30, 45, 60, 120].includes(durationSec)) return json({ error: 'Invalid run duration.' }, 400);
-  const passage = body.mode === 'ranked' ? currentRankedPassage() : body.passageId ? getPassage(body.passageId) : undefined;
+  const player = await ensurePlayer(user);
+  const requestedPassage = body.passageId ? getPassage(body.passageId) : undefined;
+  const passage = body.mode === 'ranked'
+    ? currentRankedPassage()
+    : body.mode === 'challenge'
+      ? requestedPassage
+      : requestedPassage
+        ? await freshPassageForPlayer(player.id, requestedPassage)
+        : undefined;
   if (!passage) return json({ error: 'Invalid run passage.' }, 400);
 
-  const player = await ensurePlayer(user);
   const expiresAt = new Date(Date.now() + 10 * 60 * 1_000).toISOString();
   const inserted = await admin.from('run_tickets').insert({
     user_id: player.id,
@@ -706,6 +713,31 @@ async function withinRateLimit(request: Request, user: User | null, action: stri
 
 function currentRankedPassage() {
   return PASSAGES[Math.floor(Date.now() / 900_000) % PASSAGES.length] ?? PASSAGES[0]!;
+}
+
+async function freshPassageForPlayer(playerId: string, preferred: (typeof PASSAGES)[number]) {
+  const recent = await admin.from('sessions').select('passage_id')
+    .eq('user_id', playerId)
+    .order('created_at', { ascending: false })
+    .limit(PASSAGES.length * 3);
+  if (recent.error) throw new ServiceError('fresh_passage', recent.error);
+
+  const activeIds = new Set(PASSAGES.map((passage) => passage.id));
+  const recentActiveIds = (recent.data ?? [])
+    .map((session) => session.passage_id as string)
+    .filter((passageId) => activeIds.has(passageId));
+  const seen = new Set(recentActiveIds);
+  if (!seen.has(preferred.id)) return preferred;
+
+  const unseen = PASSAGES.filter((passage) => !seen.has(passage.id));
+  if (unseen.length > 0) return randomPassage(unseen);
+
+  const mostRecentId = recentActiveIds[0];
+  return randomPassage(PASSAGES.filter((passage) => passage.id !== mostRecentId));
+}
+
+function randomPassage(pool: typeof PASSAGES) {
+  return pool[Math.floor(Math.random() * pool.length)] ?? PASSAGES[0]!;
 }
 
 function runRiskStatus(grossWpm: number, totalTypedChars: number, elapsedMs: number) {
