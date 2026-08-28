@@ -4,10 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import AuthModal from './auth-modal';
 import {
   PASSAGES,
+  applyTypingEdit,
   calculateMetrics,
   choosePassage,
   getPassage,
-  normalizeTypingInput,
   type GameMode,
   type Passage,
   type TypingMetrics,
@@ -702,6 +702,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
   const currentCharacterRef = useRef<HTMLSpanElement>(null);
   const startedAt = useRef(0);
   const finished = useRef(false);
+  const activeRef = useRef(false);
   const currentInput = useRef('');
   const currentTotal = useRef(0);
 
@@ -736,6 +737,10 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
     return () => window.cancelAnimationFrame(frame);
   }, [active, input]);
 
+  useEffect(() => {
+    activeRef.current = active;
+  }, [active]);
+
   const finish = useCallback((finalInput: string, finalTotal: number, finalElapsed: number) => {
     if (finished.current) return;
     finished.current = true;
@@ -752,6 +757,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
         setInput('');
         setTotalTypedChars(0);
         startedAt.current = Date.now();
+        activeRef.current = true;
         setActive(true);
         setCountdown(0);
         window.setTimeout(() => inputRef.current?.focus(), 80);
@@ -772,17 +778,36 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
     return () => window.clearInterval(timer);
   }, [active, durationSec, finish]);
 
-  const handleInput = (nextRaw: string) => {
-    if (!active || finished.current) {
-      if (inputRef.current) inputRef.current.value = currentInput.current;
-      return;
-    }
-    const next = normalizeTypingInput(nextRaw).replace(/[\r\n]/g, '').slice(0, passage.text.length + 20);
-    const nextTotal = totalTypedChars + Math.max(0, next.length - input.length);
-    setInput(next); setTotalTypedChars(nextTotal);
-    currentInput.current = next; currentTotal.current = nextTotal;
-    if (next === passage.text) finish(next, nextTotal, Date.now() - startedAt.current);
-  };
+  useEffect(() => {
+    const field = inputRef.current;
+    if (!field) return;
+
+    const handleBeforeInput = (event: InputEvent) => {
+      event.preventDefault();
+      field.value = '';
+      if (!activeRef.current || finished.current) return;
+
+      const edit = applyTypingEdit(
+        currentInput.current,
+        event.inputType,
+        event.data,
+        passage.text.length + 20,
+      );
+      if (edit.value === currentInput.current) return;
+
+      const nextTotal = currentTotal.current + edit.insertedChars;
+      currentInput.current = edit.value;
+      currentTotal.current = nextTotal;
+      setInput(edit.value);
+      setTotalTypedChars(nextTotal);
+      if (edit.value === passage.text) {
+        finish(edit.value, nextTotal, Date.now() - startedAt.current);
+      }
+    };
+
+    field.addEventListener('beforeinput', handleBeforeInput);
+    return () => field.removeEventListener('beforeinput', handleBeforeInput);
+  }, [finish, passage.text]);
 
   const armRace = async () => {
     inputRef.current?.focus();
@@ -827,9 +852,8 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
       <textarea
         ref={inputRef}
         className="race-input"
-        value={input}
-        onBeforeInput={(event) => { if (!active || finished.current) event.preventDefault(); }}
-        onChange={(event) => handleInput(event.target.value)}
+        defaultValue=""
+        onInput={(event) => { event.currentTarget.value = ''; }}
         onPaste={(event) => event.preventDefault()}
         onDrop={(event) => event.preventDefault()}
         onBlur={() => { if (active && !finished.current) setTimeout(() => inputRef.current?.focus(), 100); }}

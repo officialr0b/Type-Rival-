@@ -318,6 +318,37 @@ export function normalizeTypingInput(input: string): string {
     .replace(/[\u00a0\u202f]/g, ' ');
 }
 
+export type TypingEdit = {
+  value: string;
+  insertedChars: number;
+};
+
+export function applyTypingEdit(
+  current: string,
+  inputType: string,
+  data: string | null,
+  maxLength: number,
+): TypingEdit {
+  if (inputType === 'deleteContentBackward' || inputType === 'deleteWordBackward') {
+    const characters = Array.from(current);
+    characters.pop();
+    return { value: characters.join(''), insertedChars: 0 };
+  }
+
+  // A race accepts one deliberate keystroke at a time. Paste, autocomplete,
+  // dictation, composition replacements, and other bulk edits are ignored.
+  if (inputType !== 'insertText' && inputType !== '') {
+    return { value: current, insertedChars: 0 };
+  }
+
+  const characters = Array.from(normalizeTypingInput(data ?? '').replace(/[\r\n]/g, ''));
+  if (characters.length !== 1 || Array.from(current).length >= maxLength) {
+    return { value: current, insertedChars: 0 };
+  }
+
+  return { value: current + characters[0], insertedChars: 1 };
+}
+
 export function calculateMetrics(
   passage: string,
   input: string,

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { PASSAGES, calculateMetrics, choosePassage, decideWinner, getPassage, normalizeTypingInput, xpForMode } from './game.ts';
+import { PASSAGES, applyTypingEdit, calculateMetrics, choosePassage, decideWinner, getPassage, normalizeTypingInput, xpForMode } from './game.ts';
 import { updateGlicko2 } from './glicko2.ts';
 
 describe('TypeRival scoring', () => {
@@ -45,6 +45,21 @@ describe('TypeRival scoring', () => {
   it('normalizes iOS smart punctuation without changing typed content', () => {
     assert.equal(normalizeTypingInput('yesterday\u2019s trail'), "yesterday's trail");
     assert.equal(normalizeTypingInput('\u201cReady\u201d\u00a0now'), '"Ready" now');
+  });
+
+  it('builds mobile input from deliberate edits without trusting the textarea caret', () => {
+    let value = '';
+    for (const character of 'The coast') {
+      value = applyTypingEdit(value, 'insertText', character, 20).value;
+    }
+    assert.equal(value, 'The coast');
+    assert.deepEqual(applyTypingEdit(value, 'deleteContentBackward', null, 20), { value: 'The coas', insertedChars: 0 });
+  });
+
+  it('blocks iOS replacements and other bulk insertions during a race', () => {
+    assert.deepEqual(applyTypingEdit('The', 'insertReplacementText', 'The ', 20), { value: 'The', insertedChars: 0 });
+    assert.deepEqual(applyTypingEdit('The', 'insertFromPaste', ' coast', 20), { value: 'The', insertedChars: 0 });
+    assert.deepEqual(applyTypingEdit('The', 'insertText', ' coast', 20), { value: 'The', insertedChars: 0 });
   });
 });
 
