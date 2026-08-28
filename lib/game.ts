@@ -328,8 +328,10 @@ export function applyTypingEdit(
   inputType: string,
   data: string | null,
   maxLength: number,
+  allowDeletion = true,
 ): TypingEdit {
   if (inputType === 'deleteContentBackward' || inputType === 'deleteWordBackward') {
+    if (!allowDeletion) return { value: current, insertedChars: 0 };
     const characters = Array.from(current);
     characters.pop();
     return { value: characters.join(''), insertedChars: 0 };

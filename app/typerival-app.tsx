@@ -682,6 +682,13 @@ function Setup({ mode, durationSec, challenge, onDuration, onBack, onStart, star
   );
 }
 
+const RACE_INPUT_SENTINEL = '\u200b';
+
+function resetRaceInputField(field: HTMLTextAreaElement) {
+  field.value = RACE_INPUT_SENTINEL;
+  field.setSelectionRange(RACE_INPUT_SENTINEL.length, RACE_INPUT_SENTINEL.length);
+}
+
 function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
   mode: GameMode;
   durationSec: number;
@@ -751,7 +758,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
     if (!armed || countdown <= 0) return;
     const timer = window.setTimeout(() => {
       if (countdown === 1) {
-        if (inputRef.current) inputRef.current.value = '';
+        if (inputRef.current) resetRaceInputField(inputRef.current);
         currentInput.current = '';
         currentTotal.current = 0;
         setInput('');
@@ -784,7 +791,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
 
     const handleBeforeInput = (event: InputEvent) => {
       event.preventDefault();
-      field.value = '';
+      resetRaceInputField(field);
       if (!activeRef.current || finished.current) return;
 
       const edit = applyTypingEdit(
@@ -792,6 +799,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
         event.inputType,
         event.data,
         passage.text.length + 20,
+        mode !== 'ranked',
       );
       if (edit.value === currentInput.current) return;
 
@@ -807,7 +815,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
 
     field.addEventListener('beforeinput', handleBeforeInput);
     return () => field.removeEventListener('beforeinput', handleBeforeInput);
-  }, [finish, passage.text]);
+  }, [finish, mode, passage.text]);
 
   const armRace = async () => {
     inputRef.current?.focus();
@@ -824,7 +832,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
 
   return (
     <main className="race-page game-page" onClick={() => inputRef.current?.focus()}>
-      <header className="race-top"><button onClick={(event) => { event.stopPropagation(); onCancel(); }}>✕ EXIT</button><span>{mode.toUpperCase()} · {mode === 'ranked' ? 'RANKED BETA' : 'OPEN INPUT'}</span><small>TAP PASSAGE TO REFOCUS</small></header>
+      <header className="race-top"><button onClick={(event) => { event.stopPropagation(); onCancel(); }}>✕ EXIT</button><span>{mode.toUpperCase()} · {mode === 'ranked' ? 'RANKED BETA' : 'OPEN INPUT'}</span><small>{mode === 'ranked' ? 'NO BACKSPACE · ' : ''}TAP PASSAGE TO REFOCUS</small></header>
       <section className="race-hud">
         <RaceMetric value={Math.round(metrics.netWpm)} label="NET WPM" accent />
         <RaceMetric value={`${metrics.accuracy.toFixed(1)}%`} label="ACCURACY" />
@@ -852,8 +860,9 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
       <textarea
         ref={inputRef}
         className="race-input"
-        defaultValue=""
-        onInput={(event) => { event.currentTarget.value = ''; }}
+        defaultValue={RACE_INPUT_SENTINEL}
+        onInput={(event) => { resetRaceInputField(event.currentTarget); }}
+        onFocus={(event) => { resetRaceInputField(event.currentTarget); }}
         onPaste={(event) => event.preventDefault()}
         onDrop={(event) => event.preventDefault()}
         onBlur={() => { if (active && !finished.current) setTimeout(() => inputRef.current?.focus(), 100); }}
