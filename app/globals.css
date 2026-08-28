@@ -268,8 +268,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .site-footer { display: flex; width: min(calc(100% - 2rem), var(--content)); align-items: center; justify-content: space-between; gap: 1rem; margin: 0 auto; padding: 1.5rem 0 2.3rem; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.6rem; }
 .site-footer button { padding: 0; }
 .footer-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.8rem; }
-.rotate-gate { display: none; }
-
 @media (max-width: 880px) {
   .top-nav { grid-template-columns: 1fr auto; }
   .top-nav nav { justify-self: end; }
@@ -320,10 +318,70 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 }
 
 @media (orientation: portrait) and (max-width: 760px) {
-  .rotate-gate { position: fixed; z-index: 90; inset: 0; display: grid; place-content: center; gap: 0.5rem; padding: 2rem; background: var(--ink); text-align: center; }
-  .rotate-gate::before { content: '↻'; color: var(--cyan); font-size: 4rem; line-height: 1; }
-  .rotate-gate b { font-size: 1.1rem; letter-spacing: 0.08em; }
-  .rotate-gate span { color: var(--muted); font-size: 0.8rem; }
+  body:has(.race-page) { overflow: hidden; }
+  body:has(.game-page) :is(.top-nav, .site-footer) { display: none; }
+
+  .game-page { width: calc(100% - 1rem); min-height: 100dvh; }
+
+  .setup-page {
+    align-content: start;
+    gap: 1rem;
+    height: 100dvh;
+    min-height: 100dvh;
+    overflow-y: auto;
+    padding: max(0.75rem, env(safe-area-inset-top)) 0 max(0.75rem, env(safe-area-inset-bottom));
+  }
+  .setup-copy .eyebrow { margin-top: 0.8rem; }
+  .setup-copy h1 { max-width: 12ch; margin-block: 0.45rem 0.7rem; font-size: clamp(2.35rem, 11vw, 3.35rem); }
+  .setup-copy > p { font-size: 0.78rem; line-height: 1.5; }
+  .setup-rules { margin-top: 1rem; }
+  .setup-rules > span { padding-block: 0.75rem; }
+  .setup-rules b { font-size: 1rem; }
+  .setup-card { padding: 0.9rem; }
+  .duration-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0.65rem 0 0.85rem; }
+  .duration-grid button { min-height: 3.45rem; }
+  .setup-row { padding: 0.7rem 0; }
+  .setup-row em { max-width: 7.5rem; text-align: right; }
+  .setup-start { min-height: 3.25rem; margin-top: 0.45rem; }
+
+  .race-page {
+    height: var(--race-viewport-height, 100dvh);
+    min-height: 0;
+    justify-content: stretch;
+    overflow: hidden;
+    padding: max(0.45rem, env(safe-area-inset-top)) 0 max(0.45rem, env(safe-area-inset-bottom));
+  }
+  .race-top { flex: 0 0 auto; margin: 0 0 0.35rem; padding-inline: 0.15rem; }
+  .race-top button { min-height: 2rem; padding: 0.25rem 0.35rem; }
+  .race-top small { display: none; }
+  .race-top span { margin-left: auto; font-size: 0.52rem; }
+  .race-hud { flex: 0 0 auto; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .race-hud .race-metric, .race-hud .race-clock { min-height: 3.55rem; padding: 0.3rem 0.15rem; border-right: 1px solid var(--border); }
+  .race-hud .race-clock { grid-column: auto; grid-row: auto; }
+  .race-hud > :nth-child(2), .race-hud > :nth-child(4) { border-right: 1px solid var(--border); }
+  .race-hud > :last-child { border-right: 0; }
+  .race-metric b { font-size: clamp(0.88rem, 4vw, 1.08rem); }
+  .race-clock b { font-size: 1.55rem; }
+  .race-metric small, .race-clock small { font-size: 0.4rem; letter-spacing: 0.04em; }
+  .passage-card {
+    display: block;
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: clamp(0.8rem, 4vw, 1.15rem);
+    border-top: 0;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+  }
+  .passage-card:has(.countdown) { display: grid; place-items: center; }
+  .passage-wrap { width: 100%; }
+  .passage-wrap p { font-size: clamp(1rem, 4.7vw, 1.18rem); line-height: 1.62; }
+  .passage-wrap .current { scroll-margin-block: 4rem; }
+  .progress-track { position: sticky; bottom: 0; margin-top: 1rem; box-shadow: 0 -0.55rem 0.8rem var(--ink-soft); }
+  .ready-prompt { width: 100%; padding: 0.5rem; }
+  .ready-prompt b { font-size: clamp(3.2rem, 18vw, 5rem); }
+  .ready-prompt .primary-button { min-height: 3.4rem; }
 }
 
 @media (orientation: landscape) and (max-height: 580px) {

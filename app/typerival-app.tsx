@@ -532,7 +532,6 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
           onAuthenticated={authenticated}
         />
       )}
-      {(screen === 'setup' || screen === 'race') && <div className="rotate-gate"><b>ROTATE TO LANDSCAPE</b><span>TypeRival races are designed for focused landscape play.</span></div>}
     </>
   );
 }
@@ -699,6 +698,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
   const [remainingMs, setRemainingMs] = useState(durationSec * 1_000);
   const [totalTypedChars, setTotalTypedChars] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const currentCharacterRef = useRef<HTMLSpanElement>(null);
   const startedAt = useRef(0);
   const finished = useRef(false);
   const currentInput = useRef('');
@@ -706,6 +706,34 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
 
   const elapsedMs = durationSec * 1_000 - remainingMs;
   const metrics = useMemo(() => calculateMetrics(passage.text, input, elapsedMs, totalTypedChars), [passage.text, input, elapsedMs, totalTypedChars]);
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const syncViewportHeight = () => {
+      const height = Math.round(viewport?.height ?? window.innerHeight);
+      document.documentElement.style.setProperty('--race-viewport-height', `${height}px`);
+    };
+
+    syncViewportHeight();
+    viewport?.addEventListener('resize', syncViewportHeight);
+    viewport?.addEventListener('scroll', syncViewportHeight);
+    window.addEventListener('resize', syncViewportHeight);
+
+    return () => {
+      viewport?.removeEventListener('resize', syncViewportHeight);
+      viewport?.removeEventListener('scroll', syncViewportHeight);
+      window.removeEventListener('resize', syncViewportHeight);
+      document.documentElement.style.removeProperty('--race-viewport-height');
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!active) return;
+    const frame = window.requestAnimationFrame(() => {
+      currentCharacterRef.current?.scrollIntoView({ block: 'center', inline: 'nearest' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [active, input]);
 
   const finish = useCallback((finalInput: string, finalTotal: number, finalElapsed: number) => {
     if (finished.current) return;
@@ -780,7 +808,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
             <p aria-label={`Typing passage: ${passage.text}`}>
               {Array.from(passage.text).map((character, index) => {
                 const state = index >= input.length ? 'pending' : input[index] === character ? 'correct' : 'incorrect';
-                return <span key={index} className={`${state} ${index === input.length ? 'current' : ''}`}>{character}</span>;
+                return <span key={index} ref={index === input.length ? currentCharacterRef : undefined} className={`${state} ${index === input.length ? 'current' : ''}`}>{character}</span>;
               })}
             </p>
             <div className="progress-track"><span style={{ width: `${Math.min(100, input.length / passage.text.length * 100)}%` }} /></div>
