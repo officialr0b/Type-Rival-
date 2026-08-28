@@ -327,7 +327,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 }
 
 @media (orientation: landscape) and (max-height: 580px) {
-  .top-nav, .site-footer { display: none; }
+  body:has(:is(.setup-page, .game-page, .results-page)) :is(.top-nav, .site-footer) { display: none; }
   .game-page { min-height: 100svh; width: calc(100% - 1.2rem); }
   .setup-page { grid-template-columns: 0.8fr 1fr; gap: 1.2rem; padding: 0.6rem 0; }
   .setup-copy .eyebrow { margin-top: 1rem; }
