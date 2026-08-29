@@ -10,7 +10,7 @@ export type ResultShareData = {
 
 export function resultShareCaption(data: ResultShareData) {
   const versus = data.opponentHandle ? ` against ${data.opponentHandle}` : '';
-  return `${Math.round(data.wpm)} WPM at ${data.accuracy.toFixed(1)}% accuracy${versus} on TypeRival. Think you can beat it?`;
+  return `${Math.round(data.wpm)} WPM at ${data.accuracy.toFixed(1)}% accuracy${versus} on TypeRival. Think you can beat it? https://${data.host.replace(/^www\./, '')}`;
 }
 
 export function resultShareFileName(data: Pick<ResultShareData, 'wpm' | 'mode'>) {

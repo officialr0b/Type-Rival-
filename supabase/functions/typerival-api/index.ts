@@ -84,7 +84,7 @@ Deno.serve(async (request) => {
       response = await deleteAccount(user);
     } else if (route[0] === 'challenges' && route[1]) {
       response = request.method === 'GET'
-        ? await loadChallenge(route[1])
+        ? await loadChallenge(route[1], user)
         : request.method === 'POST'
           ? await attemptChallenge(request, route[1], user)
           : json({ error: 'Method not allowed.' }, 405);
@@ -593,7 +593,7 @@ async function createChallenge(request: Request, user: User | null) {
   return json({ code, creatorHandle: player.handle, metrics, path: `/?challenge=${code}`, expiresAt });
 }
 
-async function loadChallenge(code: string) {
+async function loadChallenge(code: string, user: User | null) {
   const loaded = await admin.from('challenges').select('*').eq('code', code.toUpperCase())
     .gt('expires_at', new Date().toISOString()).maybeSingle();
   if (loaded.error) throw loaded.error;
@@ -601,6 +601,37 @@ async function loadChallenge(code: string) {
   const passage = getPassage(loaded.data.passage_id);
   if (!passage) return json({ error: 'Challenge passage is unavailable.' }, 404);
   const creatorMetrics = calculateMetrics(passage.text, loaded.data.creator_input, loaded.data.creator_elapsed_ms, loaded.data.creator_total_typed_chars);
+  let latestAttempt: Record<string, unknown> | undefined;
+  if (user?.id === loaded.data.creator_user_id) {
+    const [attempt, creator] = await Promise.all([
+      admin.from('challenge_attempts')
+        .select('user_id, input, elapsed_ms, total_typed_chars, outcome')
+        .eq('challenge_id', loaded.data.id).eq('risk_status', 'clear')
+        .order('created_at', { ascending: false }).limit(1).maybeSingle(),
+      admin.from('players').select('double_xp_until').eq('id', user.id).maybeSingle(),
+    ]);
+    if (attempt.error) throw attempt.error;
+    if (creator.error) throw creator.error;
+    if (attempt.data) {
+      const challenger = attempt.data.user_id
+        ? await admin.from('players').select('handle').eq('id', attempt.data.user_id).maybeSingle()
+        : null;
+      if (challenger?.error) throw challenger.error;
+      const challengerOutcome = attempt.data.outcome as 'win' | 'loss' | 'draw';
+      latestAttempt = {
+        creatorOutcome: challengerOutcome === 'win' ? 'loss' : challengerOutcome === 'loss' ? 'win' : 'draw',
+        challengerHandle: challenger?.data?.handle ?? 'Rival',
+        challengerMetrics: calculateMetrics(
+          passage.text,
+          attempt.data.input,
+          attempt.data.elapsed_ms,
+          attempt.data.total_typed_chars,
+        ),
+        doubleXpUntil: creator.data?.double_xp_until ?? null,
+      };
+    }
+  }
+
   return json({
     code: loaded.data.code,
     creatorHandle: loaded.data.creator_handle,
@@ -608,6 +639,7 @@ async function loadChallenge(code: string) {
     durationSec: loaded.data.duration_sec,
     creatorMetrics: { netWpm: creatorMetrics.netWpm, accuracy: creatorMetrics.accuracy },
     expiresAt: loaded.data.expires_at,
+    latestAttempt,
   });
 }
 

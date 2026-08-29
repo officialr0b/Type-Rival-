@@ -102,6 +102,12 @@ type SavedResult = LocalRaceResult & {
   challengeOutcome?: 'win' | 'loss' | 'draw';
   creatorMetrics?: TypingMetrics;
   creatorHandle?: string;
+  friendlyMatch?: {
+    outcome: 'win' | 'loss' | 'draw';
+    opponentHandle: string;
+    opponentMetrics: TypingMetrics;
+    doubleXpUntil?: string | null;
+  };
 };
 
 type RankedSessionApiResult = {
@@ -118,6 +124,15 @@ type ChallengeAttemptApiResult = {
   xpEarned: number;
   xpMultiplier: number;
   doubleXpUntil?: string | null;
+};
+
+type ChallengeStatusApiResult = Challenge & {
+  latestAttempt?: {
+    creatorOutcome: 'win' | 'loss' | 'draw';
+    challengerHandle: string;
+    challengerMetrics: TypingMetrics;
+    doubleXpUntil?: string | null;
+  };
 };
 
 type SessionApiResult = {
@@ -447,6 +462,15 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     void refreshBootstrap(ageBandRef.current);
   }, [refreshBootstrap]);
 
+  const applyFriendlyMatch = useCallback((friendlyMatch: NonNullable<SavedResult['friendlyMatch']>) => {
+    setResult((current) => current ? {
+      ...current,
+      friendlyMatch,
+      doubleXpUntil: friendlyMatch.doubleXpUntil ?? current.doubleXpUntil,
+    } : current);
+    void refreshBootstrap(ageBandRef.current);
+  }, [refreshBootstrap]);
+
   const saveAge = async (nextAge: AgeBand) => {
     window.localStorage.setItem('typerival-age-band', nextAge);
     ageBandRef.current = nextAge;
@@ -531,6 +555,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           playerHandle={bootstrap.user.handle}
           message={message}
           onRankedMatch={applyRankedMatch}
+          onFriendlyMatch={applyFriendlyMatch}
           onAgain={runAgain}
           onHome={goHome}
           onSignIn={openAuth}
@@ -988,19 +1013,20 @@ function RaceMetric({ value, label, accent, warning }: { value: string | number;
   return <span className={`race-metric ${accent ? 'accent' : ''} ${warning ? 'warning' : ''}`}><b>{value}</b><small>{label}</small></span>;
 }
 
-function Results({ result, saving, signedIn, playerHandle, message, onRankedMatch, onAgain, onHome, onSignIn }: {
+function Results({ result, saving, signedIn, playerHandle, message, onRankedMatch, onFriendlyMatch, onAgain, onHome, onSignIn }: {
   result: SavedResult;
   saving: boolean;
   signedIn: boolean;
   playerHandle?: string;
   message: string;
   onRankedMatch: (match: NonNullable<SavedResult['match']>) => void;
+  onFriendlyMatch: (match: NonNullable<SavedResult['friendlyMatch']>) => void;
   onAgain: () => void;
   onHome: () => void;
   onSignIn: () => void;
 }) {
-  const outcome = result.challengeOutcome ?? result.match?.outcome;
-  const doubleXpUntil = result.match?.doubleXpUntil ?? result.doubleXpUntil;
+  const outcome = result.challengeOutcome ?? result.friendlyMatch?.outcome ?? result.match?.outcome;
+  const doubleXpUntil = result.match?.doubleXpUntil ?? result.friendlyMatch?.doubleXpUntil ?? result.doubleXpUntil;
   const headline = saving ? 'Validating your run…' : outcome === 'win' ? 'You took the win.' : outcome === 'loss' ? 'Your rival got this one.' : outcome === 'draw' ? 'Dead even.' : result.metrics.accuracy >= 97 ? 'Fast and under control.' : 'Baseline recorded.';
 
   useEffect(() => {
@@ -1029,6 +1055,39 @@ function Results({ result, saving, signedIn, playerHandle, message, onRankedMatc
     };
   }, [onRankedMatch, result.match?.status, result.mode, result.sessionId]);
 
+  useEffect(() => {
+    if (result.mode !== 'friendly' || result.friendlyMatch || !result.challengeUrl) return;
+    const code = new URL(result.challengeUrl).searchParams.get('challenge');
+    if (!code) return;
+    let stopped = false;
+    let timer = 0;
+
+    const checkChallenge = async () => {
+      try {
+        const response = await authFetch(`/api/challenges/${encodeURIComponent(code)}`, { cache: 'no-store' });
+        const data = await response.json() as ChallengeStatusApiResult;
+        if (!stopped && response.ok && data.latestAttempt) {
+          onFriendlyMatch({
+            outcome: data.latestAttempt.creatorOutcome,
+            opponentHandle: data.latestAttempt.challengerHandle,
+            opponentMetrics: data.latestAttempt.challengerMetrics,
+            doubleXpUntil: data.latestAttempt.doubleXpUntil,
+          });
+          return;
+        }
+      } catch {
+        // A later poll can recover if the rival finishes during a brief outage.
+      }
+      if (!stopped) timer = window.setTimeout(checkChallenge, 5_000);
+    };
+
+    timer = window.setTimeout(checkChallenge, 2_500);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [onFriendlyMatch, result.challengeUrl, result.friendlyMatch, result.mode]);
+
   const shareChallenge = async () => {
     if (!result.challengeUrl) return;
     const data = { title: 'TypeRival challenge', text: `I set a TypeRival score. Can you beat it?`, url: result.challengeUrl };
@@ -1046,7 +1105,9 @@ function Results({ result, saving, signedIn, playerHandle, message, onRankedMatc
         {outcome === 'win' && isBoostActive(doubleXpUntil) && <div className="boost-earned"><b>2× XP ACTIVATED</b><span>Your next runs earn double XP for about {boostMinutes(doubleXpUntil)} minutes.</span></div>}
         {result.challengeUrl && <button className="share-button" onClick={shareChallenge}>SHARE CHALLENGE LINK ↗</button>}
         {result.mode === 'ranked' && result.match?.status === 'pending' && <div className="pending-match"><i />Result banked. We’ll pair it with the next compatible rival.</div>}
+        {result.mode === 'friendly' && !result.friendlyMatch && <div className="pending-match"><i />Challenge ready. This screen updates when your rival finishes.</div>}
         {result.match?.status === 'matched' && <div className="pending-match"><i />vs. {result.match.opponentHandle} · {formatDelta(result.match.ratingDelta)} rating</div>}
+        {result.friendlyMatch && <div className="pending-match"><i />vs. {result.friendlyMatch.opponentHandle} · friendly result complete</div>}
         {!signedIn && <button className="text-button result-signin" onClick={onSignIn}>SIGN IN TO START YOUR VERIFIED HISTORY →</button>}
       </section>
       <section className="result-card">
@@ -1075,8 +1136,8 @@ function Results({ result, saving, signedIn, playerHandle, message, onRankedMatc
 
 function ShareResultButton({ result, playerHandle }: { result: SavedResult; playerHandle?: string }) {
   const [shareStatus, setShareStatus] = useState('');
-  const opponentHandle = result.creatorHandle ?? result.match?.opponentHandle;
-  const outcome = result.challengeOutcome ?? result.match?.outcome;
+  const opponentHandle = result.creatorHandle ?? result.friendlyMatch?.opponentHandle ?? result.match?.opponentHandle;
+  const outcome = result.challengeOutcome ?? result.friendlyMatch?.outcome ?? result.match?.outcome;
 
   const shareResult = async () => {
     setShareStatus('');
@@ -1102,7 +1163,7 @@ function ShareResultButton({ result, playerHandle }: { result: SavedResult; play
 
       downloadResultFile(file);
       try {
-        await navigator.clipboard?.writeText(`${text} https://${window.location.host}`);
+        await navigator.clipboard?.writeText(text);
         setShareStatus('PNG downloaded and caption copied. Attach it anywhere you post.');
       } catch {
         setShareStatus('PNG downloaded. Attach it anywhere you post.');
@@ -1137,12 +1198,12 @@ function PracticeBreakdown({ result }: { result: SavedResult }) {
 }
 
 function CompetitiveBreakdown({ result, playerHandle }: { result: SavedResult; playerHandle?: string }) {
-  const opponentMetrics = result.creatorMetrics ?? result.match?.opponentMetrics;
-  const opponentHandle = result.creatorHandle ?? result.match?.opponentHandle;
+  const opponentMetrics = result.creatorMetrics ?? result.friendlyMatch?.opponentMetrics ?? result.match?.opponentMetrics;
+  const opponentHandle = result.creatorHandle ?? result.friendlyMatch?.opponentHandle ?? result.match?.opponentHandle;
   const waiting = !opponentMetrics;
   const waitingCopy = result.mode === 'ranked'
     ? 'Your result is banked. This comparison updates automatically when a compatible rival finishes.'
-    : 'Share the challenge link. Your rival will see both complete stat lines after finishing the same passage.';
+    : 'Share the challenge link. This comparison updates automatically when your rival finishes the same passage.';
 
   return <section className="result-details versus-breakdown">
     <header><div><span className="eyebrow">HEAD-TO-HEAD</span><h2>Both performances, side by side.</h2></div><p>{waiting ? waitingCopy : 'Same passage, same clock, full comparison. Accuracy clears the gate before performance score decides the result.'}</p></header>

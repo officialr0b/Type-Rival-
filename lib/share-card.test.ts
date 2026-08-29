@@ -13,7 +13,7 @@ describe('Result sharing', () => {
   };
 
   it('builds a social caption around WPM and accuracy', () => {
-    assert.equal(resultShareCaption(result), '72 WPM at 98.3% accuracy against SteadyHands on TypeRival. Think you can beat it?');
+    assert.equal(resultShareCaption(result), '72 WPM at 98.3% accuracy against SteadyHands on TypeRival. Think you can beat it? https://type-rival-five.vercel.app');
   });
 
   it('builds a safe, recognizable PNG name', () => {
