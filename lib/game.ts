@@ -1,4 +1,12 @@
 export type GameMode = 'practice' | 'friendly' | 'ranked' | 'challenge';
+export type DeviceClass = 'mobile' | 'desktop';
+
+export type DeviceSignals = {
+  mobileHint?: boolean;
+  userAgent?: string;
+  platform?: string;
+  maxTouchPoints?: number;
+};
 
 export type Passage = {
   id: string;
@@ -14,6 +22,18 @@ export type TypingMetrics = {
   accuracy: number;
   performanceScore: number;
 };
+
+export function detectDeviceClass({
+  mobileHint,
+  userAgent = '',
+  platform = '',
+  maxTouchPoints = 0,
+}: DeviceSignals): DeviceClass {
+  if (mobileHint === true) return 'mobile';
+  if (/Android|iPhone|iPad|iPod|Mobile/i.test(userAgent)) return 'mobile';
+  if (platform === 'MacIntel' && maxTouchPoints > 1) return 'mobile';
+  return 'desktop';
+}
 
 const LEGACY_PASSAGES: Passage[] = [
   {

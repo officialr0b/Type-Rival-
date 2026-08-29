@@ -181,7 +181,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .leaderboard-page, .legal-page { min-height: calc(100svh - 8rem); padding: clamp(3rem, 7vw, 6rem) 0; }
 .leaderboard-page > header { display: flex; align-items: end; justify-content: space-between; gap: 2rem; }
 .leaderboard-page h1, .legal-page h1 { font-size: clamp(3rem, 6vw, 5rem); }
-.leaderboard-table { margin-top: 2.5rem; border: 1px solid var(--border); background: var(--panel); overflow-x: auto; }
+.leaderboard-tabs, .leaderboard-subtabs { display: flex; flex-wrap: wrap; gap: 0.55rem; }
+.leaderboard-tabs { margin-top: 2.5rem; }
+.leaderboard-subtabs { margin-top: 0.85rem; }
+.leaderboard-tabs button, .leaderboard-subtabs button { min-height: 2.7rem; border: 1px solid var(--border-bright); padding: 0.65rem 1rem; background: var(--panel); color: var(--muted); cursor: pointer; font-size: 0.62rem; font-weight: 950; letter-spacing: 0.1em; }
+.leaderboard-tabs button.selected, .leaderboard-subtabs button.selected { border-color: var(--cyan); background: var(--cyan-soft); color: var(--cyan); }
+.leaderboard-note { max-width: 44rem; margin: 0.75rem 0 0; color: var(--muted); font-size: 0.68rem; line-height: 1.6; }
+.leaderboard-table { margin-top: 1rem; border: 1px solid var(--border); background: var(--panel); overflow-x: auto; }
 .leaderboard-head, .leaderboard-row { display: grid; min-width: 44rem; grid-template-columns: 0.55fr 1.65fr repeat(4, 1fr); align-items: center; gap: 0.6rem; padding: 0.9rem 1rem; border-bottom: 1px solid var(--border); }
 .leaderboard-head { background: var(--ink-soft); color: var(--muted); font-size: 0.54rem; font-weight: 950; letter-spacing: 0.1em; }
 .leaderboard-row { font-size: 0.78rem; }

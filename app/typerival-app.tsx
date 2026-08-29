@@ -7,6 +7,7 @@ import {
   applyTypingEdit,
   calculateMetrics,
   choosePassage,
+  detectDeviceClass,
   getPassage,
   type GameMode,
   type Passage,
@@ -21,6 +22,7 @@ import {
 
 type Screen = 'home' | 'setup' | 'race' | 'results' | 'leaderboard' | 'account' | 'legal' | 'feedback';
 type AgeBand = 'under13' | 'teen' | 'adult';
+type LeaderboardEntry = { handle: string; averageWpm: number; accuracy: number; sessions: number; rating: number };
 
 type Player = {
   signedIn: boolean;
@@ -37,7 +39,8 @@ type Player = {
 type Bootstrap = {
   user: Player;
   stats: { sessions: number; averageWpm: number; bestWpm: number; accuracy: number; activeDays: number };
-  leaderboard: Array<{ handle: string; averageWpm: number; accuracy: number; sessions: number; rating: number }>;
+  leaderboard: LeaderboardEntry[];
+  rankedLeaderboards: { mobile: LeaderboardEntry[]; desktop: LeaderboardEntry[] };
   latestRanked: { matchStatus: string; outcome?: string; ratingDelta?: number } | null;
 };
 
@@ -124,6 +127,7 @@ const defaultBootstrap: Bootstrap = {
   user: { signedIn: false },
   stats: emptyStats,
   leaderboard: [],
+  rankedLeaderboards: { mobile: [], desktop: [] },
   latestRanked: null,
 };
 
@@ -286,7 +290,7 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
       const response = await authFetch('/api/runs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ mode, passageId: passage.id, durationSec, ageBand }),
+        body: JSON.stringify({ mode, passageId: passage.id, durationSec, ageBand, deviceClass: browserDeviceClass() }),
       });
       const data = await response.json() as RunTicket & { error?: string };
       if (!response.ok) throw new Error(data.error ?? 'The run could not be authorized.');
@@ -924,16 +928,41 @@ function Results({ result, saving, signedIn, message, onAgain, onHome, onSignIn 
 }
 
 function Leaderboard({ data, onBack }: { data: Bootstrap; onBack: () => void }) {
+  const [board, setBoard] = useState<'open' | 'ranked'>('open');
+  const [rankedDevice, setRankedDevice] = useState<'mobile' | 'desktop'>('mobile');
+  const entries = board === 'open' ? data.leaderboard : data.rankedLeaderboards[rankedDevice];
+  const title = board === 'open' ? 'Open leaderboard' : 'Ranked leaderboard';
+  const description = board === 'open'
+    ? 'You can hit the leaderboard as soon as your first run is complete. Clear, signed-in results count toward your rolling 30-day averages.'
+    : '45-second ranked runs only. Mobile and tablet players compete together, while desktop players have their own board.';
+
   return (
     <main className="leaderboard-page">
-      <header><div><span className="eyebrow">ROLLING 30 DAYS</span><h1>Open leaderboard</h1><p>You can hit the leaderboard as soon as your first run is complete. Clear, signed-in results count toward your rolling 30-day averages.</p></div><button className="back-button" onClick={onBack}>← BACK HOME</button></header>
-      <section className="leaderboard-table">
+      <header><div><span className="eyebrow">ROLLING 30 DAYS</span><h1>{title}</h1><p>{description}</p></div><button className="back-button" onClick={onBack}>← BACK HOME</button></header>
+      <nav className="leaderboard-tabs" aria-label="Leaderboard type">
+        <button className={board === 'open' ? 'selected' : ''} aria-pressed={board === 'open'} onClick={() => setBoard('open')}>OPEN</button>
+        <button className={board === 'ranked' ? 'selected' : ''} aria-pressed={board === 'ranked'} onClick={() => setBoard('ranked')}>RANKED</button>
+      </nav>
+      {board === 'ranked' && <>
+        <nav className="leaderboard-subtabs" aria-label="Ranked device class">
+          <button className={rankedDevice === 'mobile' ? 'selected' : ''} aria-pressed={rankedDevice === 'mobile'} onClick={() => setRankedDevice('mobile')}>MOBILE + TABLET</button>
+          <button className={rankedDevice === 'desktop' ? 'selected' : ''} aria-pressed={rankedDevice === 'desktop'} onClick={() => setRankedDevice('desktop')}>DESKTOP</button>
+        </nav>
+        <p className="leaderboard-note">Device-class tracking starts with runs completed after this update. Rating remains unified during the async Ranked beta.</p>
+      </>}
+      <LeaderboardTable entries={entries} emptyLabel={board === 'open' ? 'Complete a signed-in run to claim the first spot.' : `Complete a ${rankedDevice === 'mobile' ? 'mobile or tablet' : 'desktop'} Ranked run to claim the first spot.`} />
+    </main>
+  );
+}
+
+function LeaderboardTable({ entries, emptyLabel }: { entries: LeaderboardEntry[]; emptyLabel: string }) {
+  return (
+    <section className="leaderboard-table">
         <div className="leaderboard-head"><span>RANK</span><span>RIVAL</span><span>AVG WPM</span><span>ACCURACY</span><span>RUNS</span><span>RATING</span></div>
-        {data.leaderboard.length === 0 ? <div className="empty-board"><b>The ladder is open.</b><span>Complete a signed-in run to claim the first spot.</span></div> : data.leaderboard.map((entry, index) => (
+        {entries.length === 0 ? <div className="empty-board"><b>The ladder is open.</b><span>{emptyLabel}</span></div> : entries.map((entry, index) => (
           <div className="leaderboard-row" key={entry.handle}><span data-label="RANK">#{index + 1}</span><span data-label="RIVAL"><i>{entry.handle.slice(0, 1).toUpperCase()}</i><b>{entry.handle}</b></span><span data-label="AVG WPM">{entry.averageWpm}</span><span data-label="ACCURACY">{entry.accuracy}%</span><span data-label="RUNS">{entry.sessions}</span><span data-label="RATING">{Math.round(entry.rating)}</span></div>
         ))}
       </section>
-    </main>
   );
 }
 
@@ -1148,6 +1177,16 @@ function boostMinutes(value?: string | null) {
 }
 
 type StoredRun = { netWpm: number; accuracy: number; createdAt: string };
+
+function browserDeviceClass() {
+  const navigatorWithHints = navigator as Navigator & { userAgentData?: { mobile?: boolean } };
+  return detectDeviceClass({
+    mobileHint: navigatorWithHints.userAgentData?.mobile,
+    userAgent: navigator.userAgent,
+    platform: navigator.platform,
+    maxTouchPoints: navigator.maxTouchPoints,
+  });
+}
 
 const PASSAGE_HISTORY_KEY = 'typerival-passage-history-v1';
 

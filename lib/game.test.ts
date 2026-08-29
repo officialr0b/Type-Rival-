@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { PASSAGES, applyTypingEdit, calculateMetrics, choosePassage, decideWinner, getPassage, normalizeTypingInput, xpForMode } from './game.ts';
+import { PASSAGES, applyTypingEdit, calculateMetrics, choosePassage, decideWinner, detectDeviceClass, getPassage, normalizeTypingInput, xpForMode } from './game.ts';
 import { updateGlicko2 } from './glicko2.ts';
 
 describe('TypeRival scoring', () => {
@@ -59,6 +59,13 @@ describe('TypeRival scoring', () => {
   it('allows Practice corrections while Ranked can lock backspace', () => {
     assert.deepEqual(applyTypingEdit('mistkae', 'deleteContentBackward', null, 20, true), { value: 'mistka', insertedChars: 0 });
     assert.deepEqual(applyTypingEdit('mistkae', 'deleteContentBackward', null, 20, false), { value: 'mistkae', insertedChars: 0 });
+  });
+
+  it('separates phone and tablet runs from desktop runs', () => {
+    assert.equal(detectDeviceClass({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)' }), 'mobile');
+    assert.equal(detectDeviceClass({ userAgent: 'Mozilla/5.0 (Linux; Android 15; Pixel 9)' }), 'mobile');
+    assert.equal(detectDeviceClass({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X)', platform: 'MacIntel', maxTouchPoints: 5 }), 'mobile');
+    assert.equal(detectDeviceClass({ mobileHint: false, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }), 'desktop');
   });
 
   it('blocks iOS replacements and other bulk insertions during a race', () => {

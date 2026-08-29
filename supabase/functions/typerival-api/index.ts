@@ -1,5 +1,5 @@
 import { createClient, type User } from 'npm:@supabase/supabase-js@2.112.4';
-import { calculateMetrics, decideWinner, getPassage, PASSAGES, xpForMode, type GameMode } from '../../../lib/game.ts';
+import { calculateMetrics, decideWinner, getPassage, PASSAGES, xpForMode, type DeviceClass, type GameMode } from '../../../lib/game.ts';
 import { updateGlicko2 } from '../../../lib/glicko2.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
@@ -38,6 +38,7 @@ type RunTicketRow = {
   mode: GameMode;
   passage_id: string;
   duration_sec: number;
+  device_class: DeviceClass | 'unknown';
   issued_at: string;
   started_at: string | null;
   expires_at: string;
@@ -153,15 +154,26 @@ async function bootstrap(url: URL, user: User | null) {
     }
   }
   const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000).toISOString();
-  const boardQuery = await admin.rpc('tr_get_leaderboard', { p_cutoff: cutoff, p_limit: 10 });
+  const [boardQuery, mobileRankedQuery, desktopRankedQuery] = await Promise.all([
+    admin.rpc('tr_get_leaderboard', { p_cutoff: cutoff, p_limit: 10 }),
+    admin.rpc('tr_get_ranked_leaderboard', { p_cutoff: cutoff, p_device_class: 'mobile', p_limit: 10 }),
+    admin.rpc('tr_get_ranked_leaderboard', { p_cutoff: cutoff, p_device_class: 'desktop', p_limit: 10 }),
+  ]);
   if (boardQuery.error) throw new ServiceError('bootstrap:leaderboard', boardQuery.error);
-  const leaderboard = (boardQuery.data ?? []).map((entry: Record<string, unknown>) => ({
+  if (mobileRankedQuery.error) throw new ServiceError('bootstrap:ranked_mobile', mobileRankedQuery.error);
+  if (desktopRankedQuery.error) throw new ServiceError('bootstrap:ranked_desktop', desktopRankedQuery.error);
+  const mapLeaderboard = (rows: Record<string, unknown>[]) => rows.map((entry) => ({
     handle: String(entry.handle),
     averageWpm: Number(entry.average_wpm),
     accuracy: Number(entry.accuracy),
     sessions: Number(entry.sessions),
     rating: Number(entry.rating),
   }));
+  const leaderboard = mapLeaderboard((boardQuery.data ?? []) as Record<string, unknown>[]);
+  const rankedLeaderboards = {
+    mobile: mapLeaderboard((mobileRankedQuery.data ?? []) as Record<string, unknown>[]),
+    desktop: mapLeaderboard((desktopRankedQuery.data ?? []) as Record<string, unknown>[]),
+  };
 
   let stats = { sessions: 0, averageWpm: 0, bestWpm: 0, accuracy: 0, activeDays: 0 };
   let latestRanked: Record<string, unknown> | null = null;
@@ -206,6 +218,7 @@ async function bootstrap(url: URL, user: User | null) {
     } : { signedIn: false },
     stats,
     leaderboard,
+    rankedLeaderboards,
     latestRanked,
   };
 }
@@ -217,12 +230,16 @@ async function issueRun(request: Request, user: User | null) {
     passageId?: string;
     durationSec?: number;
     ageBand?: 'under13' | 'teen' | 'adult';
+    deviceClass?: DeviceClass;
   };
   if (body.ageBand !== 'teen' && body.ageBand !== 'adult') {
     return json({ error: 'Saved runs are available for players 13 and older.' }, 403);
   }
   if (!body.mode || !['practice', 'friendly', 'ranked', 'challenge'].includes(body.mode)) {
     return json({ error: 'Invalid run mode.' }, 400);
+  }
+  if (body.deviceClass !== 'mobile' && body.deviceClass !== 'desktop') {
+    return json({ error: 'Invalid device class.' }, 400);
   }
 
   const durationSec = body.mode === 'ranked' ? RANKED_DURATION_SEC : Number(body.durationSec);
@@ -244,6 +261,7 @@ async function issueRun(request: Request, user: User | null) {
     mode: body.mode,
     passage_id: passage.id,
     duration_sec: durationSec,
+    device_class: body.deviceClass,
     expires_at: expiresAt,
   }).select('*').single();
   if (inserted.error) throw inserted.error;
@@ -352,7 +370,7 @@ async function submitSession(request: Request, user: User | null) {
     return json({ metrics, xpEarned: baseXp, xpMultiplier: 1, saved: false, riskStatus, match: null });
   }
   if (typeof body.runTicketId !== 'string') return json({ error: 'Start a new authorized run before submitting.' }, 409);
-  await consumeRunTicket(user, body.runTicketId, mode, passage.id, durationSec, elapsedMs);
+  const ticket = await consumeRunTicket(user, body.runTicketId, mode, passage.id, durationSec, elapsedMs);
 
   const player = await ensurePlayer(user);
   const doubleXpActive = Boolean(player.double_xp_until && Date.parse(player.double_xp_until) > Date.now());
@@ -375,11 +393,12 @@ async function submitSession(request: Request, user: User | null) {
     p_risk_status: riskStatus,
     p_match_status: matchStatus,
     p_run_ticket_id: body.runTicketId,
+    p_device_class: ticket.device_class,
   });
   if (inserted.error) throw inserted.error;
   const session = Array.isArray(inserted.data) ? inserted.data[0] : inserted.data;
   const match = mode === 'ranked' && riskStatus === 'clear'
-    ? await tryRankedMatch(session.id, player, passage.id)
+    ? await tryRankedMatch(session.id, player, passage.id, ticket.device_class)
     : null;
 
   return json({
@@ -394,11 +413,12 @@ async function submitSession(request: Request, user: User | null) {
   });
 }
 
-async function tryRankedMatch(sessionId: string, player: PlayerRow, passageId: string) {
+async function tryRankedMatch(sessionId: string, player: PlayerRow, passageId: string, deviceClass: DeviceClass | 'unknown') {
   const claimed = await admin.rpc('tr_claim_ranked_pair', {
     p_session_id: sessionId,
     p_user_id: player.id,
     p_passage_id: passageId,
+    p_device_class: deviceClass,
     p_current_rating: player.rating,
     p_rating_window: 250,
   });
