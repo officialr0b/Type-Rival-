@@ -237,8 +237,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .age-modal h2 { margin: 0.5rem 0; font-size: clamp(1.8rem, 5vw, 2.8rem); letter-spacing: -0.05em; }
 .age-modal > p { margin: 0; color: var(--muted); font-size: 0.82rem; line-height: 1.6; }
 .age-options { display: grid; gap: 0.55rem; margin: 1.5rem 0 1rem; }
-.age-options button { display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-height: 3.8rem; padding: 0.8rem 1rem; border: 1px solid var(--border); background: var(--ink-soft); cursor: pointer; text-align: left; }
-.age-options button:hover { border-color: var(--cyan); background: var(--cyan-soft); }
+.age-options a { display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-height: 3.8rem; padding: 0.8rem 1rem; border: 1px solid var(--border); background: var(--ink-soft); cursor: pointer; text-align: left; touch-action: manipulation; }
+.age-options a:hover { border-color: var(--cyan); background: var(--cyan-soft); }
 .age-options b { font-size: 0.9rem; }
 .age-options span { color: var(--muted); font-size: 0.68rem; }
 .age-modal > small { color: var(--muted); font-size: 0.62rem; line-height: 1.5; }

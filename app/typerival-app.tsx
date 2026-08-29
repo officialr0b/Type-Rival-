@@ -14,6 +14,7 @@ import {
   type Passage,
   type TypingMetrics,
 } from '../lib/game';
+import { parseAgeBand, type AgeBand } from '../lib/age';
 import {
   authFetch,
   configureSupabase,
@@ -22,7 +23,6 @@ import {
 } from '../lib/supabase-browser';
 
 type Screen = 'home' | 'setup' | 'race' | 'results' | 'leaderboard' | 'account' | 'legal' | 'feedback';
-type AgeBand = 'under13' | 'teen' | 'adult';
 type LeaderboardEntry = { handle: string; averageWpm: number; accuracy: number; sessions: number; rating: number };
 
 type Player = {
@@ -132,7 +132,10 @@ const defaultBootstrap: Bootstrap = {
   latestRanked: null,
 };
 
-export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: SupabasePublicConfig | null }) {
+export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
+  supabaseConfig: SupabasePublicConfig | null;
+  initialAgeBand: AgeBand | null;
+}) {
   configureSupabase(supabaseConfig);
   const [screen, setScreen] = useState<Screen>('home');
   const [mode, setMode] = useState<GameMode>('practice');
@@ -144,7 +147,7 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
   const [saving, setSaving] = useState(false);
   const [starting, setStarting] = useState(false);
   const [message, setMessage] = useState('');
-  const [ageBand, setAgeBand] = useState<AgeBand | null>(null);
+  const [ageBand, setAgeBand] = useState<AgeBand | null>(initialAgeBand);
   const [challenge, setChallenge] = useState<Challenge | null>(null);
   const [installPrompt, setInstallPrompt] = useState<DeferredInstallPrompt | null>(null);
   const [localStats, setLocalStats] = useState<PracticeStats>(emptyStats);
@@ -168,8 +171,9 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
   }, []);
 
   useEffect(() => {
-    const savedAge = window.localStorage.getItem('typerival-age-band') as AgeBand | null;
-    const validAge = savedAge && ['under13', 'teen', 'adult'].includes(savedAge) ? savedAge : null;
+    const savedAge = parseAgeBand(window.localStorage.getItem('typerival-age-band'));
+    const validAge = initialAgeBand ?? savedAge;
+    if (initialAgeBand) window.localStorage.setItem('typerival-age-band', initialAgeBand);
     ageBandRef.current = validAge;
     const client = getSupabaseBrowserClient();
     const initializeTimer = window.setTimeout(() => {
@@ -215,7 +219,15 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
       setInstallPrompt(event as DeferredInstallPrompt);
     };
     window.addEventListener('beforeinstallprompt', installHandler);
-    if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');
+    if ('serviceWorker' in navigator) {
+      void navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' })
+        .then((registration) => registration.update());
+    }
+    if (params.has('age')) {
+      params.delete('age');
+      const query = params.toString();
+      window.history.replaceState({}, '', `${window.location.pathname}${query ? `?${query}` : ''}`);
+    }
     const subscription = client?.auth.onAuthStateChange((event) => {
       if (event === 'PASSWORD_RECOVERY') {
         setAuthMode('update');
@@ -229,7 +241,7 @@ export default function TypeRivalApp({ supabaseConfig }: { supabaseConfig: Supab
       window.removeEventListener('beforeinstallprompt', installHandler);
       subscription?.unsubscribe();
     };
-  }, [refreshBootstrap]);
+  }, [initialAgeBand, refreshBootstrap]);
 
   const openAuth = () => {
     if (!ageBand) {
@@ -1158,11 +1170,12 @@ function Feedback({ onBack }: { onBack: () => void }) {
   );
 }
 
+/* eslint-disable @next/next/no-html-link-for-pages -- Native navigation keeps the age gate usable before hydration. */
 function AgeGate({ onChoose }: { onChoose: (age: AgeBand) => void }) {
   const modalRef = useRef<HTMLElement>(null);
   useEffect(() => {
     const modal = modalRef.current;
-    const first = modal?.querySelector<HTMLButtonElement>('button');
+    const first = modal?.querySelector<HTMLAnchorElement>('a');
     first?.focus();
     const trap = (event: KeyboardEvent) => {
       if (event.key !== 'Tab' || !modal) return;
@@ -1182,12 +1195,13 @@ function AgeGate({ onChoose }: { onChoose: (age: AgeBand) => void }) {
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="age-title">
       <section className="age-modal" ref={modalRef}><span className="wordmark-mark">TR</span><span className="eyebrow">ONE QUICK CHECK</span><h2 id="age-title">Which age range are you in?</h2><p>This keeps the competition and saved-data experience appropriate. We do not need your birthdate.</p>
-        <div className="age-options"><button onClick={() => onChoose('under13')}><b>Under 13</b><span>Private practice only</span></button><button onClick={() => onChoose('teen')}><b>13–17</b><span>Free competitive play</span></button><button onClick={() => onChoose('adult')}><b>18+</b><span>All free MVP modes</span></button></div>
+        <div className="age-options"><a href="/?age=under13" onClick={() => onChoose('under13')}><b>Under 13</b><span>Private practice only</span></a><a href="/?age=teen" onClick={() => onChoose('teen')}><b>13–17</b><span>Free competitive play</span></a><a href="/?age=adult" onClick={() => onChoose('adult')}><b>18+</b><span>All free MVP modes</span></a></div>
         <small>You can change this later by clearing TypeRival’s local site data.</small>
       </section>
     </div>
   );
 }
+/* eslint-enable @next/next/no-html-link-for-pages */
 
 function formatDelta(value?: number) {
   if (value === undefined || value === null) return 'pending';

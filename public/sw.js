@@ -1,8 +1,8 @@
-const CACHE = 'typerival-shell-v6';
-const SHELL = ['/', '/manifest.webmanifest', '/icon.png', '/og.jpg'];
+const CACHE = 'typerival-static-v7';
+const STATIC_ASSETS = ['/manifest.webmanifest', '/icon.png', '/og.jpg'];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));
+  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(STATIC_ASSETS)));
   self.skipWaiting();
 });
 
@@ -18,19 +18,8 @@ self.addEventListener('fetch', (event) => {
   const request = event.request;
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
-  if (url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
-
-  if (request.mode === 'navigate') {
-    event.respondWith(
-      fetch(request)
-        .then((response) => {
-          if (response.ok) caches.open(CACHE).then((cache) => cache.put('/', response.clone()));
-          return response;
-        })
-        .catch(() => caches.match('/')),
-    );
-    return;
-  }
+  if (url.origin !== self.location.origin) return;
+  if (!STATIC_ASSETS.includes(url.pathname)) return;
 
   event.respondWith(
     caches.match(request).then((cached) => cached || fetch(request).then((response) => {
