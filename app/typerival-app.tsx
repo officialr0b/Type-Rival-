@@ -16,6 +16,15 @@ import {
 } from '../lib/game';
 import { parseAgeBand, type AgeBand } from '../lib/age';
 import {
+  emptyTypingProfile,
+  practiceCoaching,
+  type TypingProfile,
+} from '../lib/result-coaching';
+import {
+  createResultShareFile,
+  resultShareCaption,
+} from '../lib/share-card';
+import {
   authFetch,
   configureSupabase,
   getSupabaseBrowserClient,
@@ -61,6 +70,7 @@ type LocalRaceResult = {
   elapsedMs: number;
   totalTypedChars: number;
   metrics: TypingMetrics;
+  typingProfile: TypingProfile;
 };
 
 type RunTicket = {
@@ -73,6 +83,7 @@ type RunTicket = {
 
 type SavedResult = LocalRaceResult & {
   xpEarned: number;
+  sessionId?: string;
   xpMultiplier?: number;
   saved: boolean;
   riskStatus?: string;
@@ -81,6 +92,7 @@ type SavedResult = LocalRaceResult & {
     outcome?: string;
     opponentHandle?: string;
     opponentScore?: number;
+    opponentMetrics?: TypingMetrics;
     ratingDelta?: number;
     rating?: number;
     doubleXpUntil?: string | null;
@@ -90,6 +102,11 @@ type SavedResult = LocalRaceResult & {
   challengeOutcome?: 'win' | 'loss' | 'draw';
   creatorMetrics?: TypingMetrics;
   creatorHandle?: string;
+};
+
+type RankedSessionApiResult = {
+  error?: string;
+  match: NonNullable<SavedResult['match']>;
 };
 
 type ChallengeAttemptApiResult = {
@@ -353,7 +370,9 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            ...localResult,
+            input: localResult.input,
+            elapsedMs: localResult.elapsedMs,
+            totalTypedChars: localResult.totalTypedChars,
             durationSec,
             runTicketId: runTicket?.runTicketId,
             ageBand,
@@ -422,6 +441,11 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     setRunTicket(null);
     setScreen('setup');
   };
+
+  const applyRankedMatch = useCallback((match: NonNullable<SavedResult['match']>) => {
+    setResult((current) => current ? { ...current, match } : current);
+    void refreshBootstrap(ageBandRef.current);
+  }, [refreshBootstrap]);
 
   const saveAge = async (nextAge: AgeBand) => {
     window.localStorage.setItem('typerival-age-band', nextAge);
@@ -504,7 +528,9 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           result={result}
           saving={saving}
           signedIn={bootstrap.user.signedIn}
+          playerHandle={bootstrap.user.handle}
           message={message}
+          onRankedMatch={applyRankedMatch}
           onAgain={runAgain}
           onHome={goHome}
           onSignIn={openAuth}
@@ -730,8 +756,11 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
   const currentInput = useRef('');
   const currentTotal = useRef(0);
   const lastPhysicalEdit = useRef<{ inputType: string; data: string | null; at: number } | null>(null);
+  const typingProfile = useRef<TypingProfile>(emptyTypingProfile());
+  const lastInsertAt = useRef(0);
 
   const elapsedMs = durationSec * 1_000 - remainingMs;
+  const passageCharacters = useMemo(() => Array.from(passage.text), [passage.text]);
   const metrics = useMemo(() => calculateMetrics(passage.text, input, elapsedMs, totalTypedChars), [passage.text, input, elapsedMs, totalTypedChars]);
 
   useEffect(() => {
@@ -769,20 +798,53 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
   const finish = useCallback((finalInput: string, finalTotal: number, finalElapsed: number) => {
     if (finished.current) return;
     finished.current = true;
-    onComplete({ passage, mode, input: finalInput, totalTypedChars: finalTotal, elapsedMs: Math.max(1_000, finalElapsed), metrics: calculateMetrics(passage.text, finalInput, finalElapsed, finalTotal) });
+    onComplete({
+      passage,
+      mode,
+      input: finalInput,
+      totalTypedChars: finalTotal,
+      elapsedMs: Math.max(1_000, finalElapsed),
+      metrics: calculateMetrics(passage.text, finalInput, finalElapsed, finalTotal),
+      typingProfile: { ...typingProfile.current, mistakes: [...typingProfile.current.mistakes] },
+    });
   }, [mode, onComplete, passage]);
 
   const applyRaceEdit = useCallback((inputType: string, data: string | null) => {
     if (!activeRef.current || finished.current) return;
 
+    const previousInput = currentInput.current;
     const edit = applyTypingEdit(
-      currentInput.current,
+      previousInput,
       inputType,
       data,
       passage.text.length + 20,
       mode !== 'ranked',
     );
-    if (edit.value === currentInput.current) return;
+    if (edit.value === previousInput) return;
+
+    if (edit.insertedChars === 1) {
+      const now = performance.now();
+      const index = Array.from(previousInput).length;
+      const actual = Array.from(edit.value).at(-1) ?? '';
+      const expected = passageCharacters[index] ?? '';
+      if (actual !== expected) {
+        typingProfile.current.firstTryErrors += 1;
+        if (typingProfile.current.mistakes.length < 24) {
+          typingProfile.current.mistakes.push({ expected, actual, index });
+        }
+      }
+      if (lastInsertAt.current > 0) {
+        const pauseMs = now - lastInsertAt.current;
+        if (pauseMs >= 900) typingProfile.current.pauseCount += 1;
+        if (pauseMs > typingProfile.current.longestPauseMs) {
+          typingProfile.current.longestPauseMs = Math.round(pauseMs);
+          typingProfile.current.longestPauseIndex = index;
+        }
+      }
+      lastInsertAt.current = now;
+    } else if (Array.from(edit.value).length < Array.from(previousInput).length) {
+      typingProfile.current.corrections += 1;
+    }
 
     const nextTotal = currentTotal.current + edit.insertedChars;
     currentInput.current = edit.value;
@@ -792,7 +854,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
     if (edit.value === passage.text) {
       finish(edit.value, nextTotal, Date.now() - startedAt.current);
     }
-  }, [finish, mode, passage.text]);
+  }, [finish, mode, passage.text, passageCharacters]);
 
   useEffect(() => {
     if (!armed || countdown <= 0) return;
@@ -801,6 +863,8 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
         if (inputRef.current) resetRaceInputField(inputRef.current);
         currentInput.current = '';
         currentTotal.current = 0;
+        typingProfile.current = emptyTypingProfile();
+        lastInsertAt.current = 0;
         setInput('');
         setTotalTypedChars(0);
         startedAt.current = Date.now();
@@ -924,12 +988,46 @@ function RaceMetric({ value, label, accent, warning }: { value: string | number;
   return <span className={`race-metric ${accent ? 'accent' : ''} ${warning ? 'warning' : ''}`}><b>{value}</b><small>{label}</small></span>;
 }
 
-function Results({ result, saving, signedIn, message, onAgain, onHome, onSignIn }: {
-  result: SavedResult; saving: boolean; signedIn: boolean; message: string; onAgain: () => void; onHome: () => void; onSignIn: () => void;
+function Results({ result, saving, signedIn, playerHandle, message, onRankedMatch, onAgain, onHome, onSignIn }: {
+  result: SavedResult;
+  saving: boolean;
+  signedIn: boolean;
+  playerHandle?: string;
+  message: string;
+  onRankedMatch: (match: NonNullable<SavedResult['match']>) => void;
+  onAgain: () => void;
+  onHome: () => void;
+  onSignIn: () => void;
 }) {
   const outcome = result.challengeOutcome ?? result.match?.outcome;
   const doubleXpUntil = result.match?.doubleXpUntil ?? result.doubleXpUntil;
   const headline = saving ? 'Validating your run…' : outcome === 'win' ? 'You took the win.' : outcome === 'loss' ? 'Your rival got this one.' : outcome === 'draw' ? 'Dead even.' : result.metrics.accuracy >= 97 ? 'Fast and under control.' : 'Baseline recorded.';
+
+  useEffect(() => {
+    if (result.mode !== 'ranked' || result.match?.status !== 'pending' || !result.sessionId) return;
+    let stopped = false;
+    let timer = 0;
+
+    const checkMatch = async () => {
+      try {
+        const response = await authFetch(`/api/sessions/${encodeURIComponent(result.sessionId!)}`, { cache: 'no-store' });
+        const data = await response.json() as RankedSessionApiResult;
+        if (!stopped && response.ok && data.match.status === 'matched') {
+          onRankedMatch(data.match);
+          return;
+        }
+      } catch {
+        // The next poll can recover from a transient connection failure.
+      }
+      if (!stopped) timer = window.setTimeout(checkMatch, 5_000);
+    };
+
+    timer = window.setTimeout(checkMatch, 2_500);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [onRankedMatch, result.match?.status, result.mode, result.sessionId]);
 
   const shareChallenge = async () => {
     if (!result.challengeUrl) return;
@@ -959,11 +1057,120 @@ function Results({ result, saving, signedIn, message, onAgain, onHome, onSignIn 
           <RaceMetric value={result.metrics.incorrectChars} label="ERRORS" warning={result.metrics.incorrectChars > 0} />
           <RaceMetric value={Math.round(result.metrics.performanceScore)} label="SCORE" />
         </div>
-        {result.creatorMetrics && <p className="opponent-result">{result.creatorHandle}: {Math.round(result.creatorMetrics.netWpm)} WPM · {result.creatorMetrics.accuracy.toFixed(1)}%</p>}
+        <div className="result-detail-strip">
+          <span><small>CORRECT</small><b>{result.metrics.correctChars}</b></span>
+          <span><small>KEYS SENT</small><b>{result.totalTypedChars}</b></span>
+          <span><small>TIME</small><b>{(result.elapsedMs / 1_000).toFixed(1)}s</b></span>
+          <span><small>CORRECTIONS</small><b>{result.typingProfile.corrections}</b></span>
+        </div>
+        <ShareResultButton result={result} playerHandle={playerHandle} />
         <div className="result-actions"><button className="primary-button" onClick={onAgain}>RUN IT BACK</button><button className="secondary-button" onClick={onHome}>HOME</button></div>
       </section>
+      {result.mode === 'practice'
+        ? <PracticeBreakdown result={result} />
+        : <CompetitiveBreakdown result={result} playerHandle={playerHandle} />}
     </main>
   );
+}
+
+function ShareResultButton({ result, playerHandle }: { result: SavedResult; playerHandle?: string }) {
+  const [shareStatus, setShareStatus] = useState('');
+  const opponentHandle = result.creatorHandle ?? result.match?.opponentHandle;
+  const outcome = result.challengeOutcome ?? result.match?.outcome;
+
+  const shareResult = async () => {
+    setShareStatus('');
+    try {
+      const shareData = {
+        wpm: result.metrics.netWpm,
+        accuracy: result.metrics.accuracy,
+        mode: result.mode === 'challenge' ? 'friendly' : result.mode,
+        handle: playerHandle ?? 'Guest Rival',
+        opponentHandle,
+        outcome,
+        host: window.location.host,
+      };
+      const file = createResultShareFile(shareData);
+      const text = resultShareCaption(shareData);
+      const nativeShare = { title: 'My TypeRival result', text, files: [file] };
+
+      if (navigator.share && navigator.canShare?.(nativeShare)) {
+        await navigator.share(nativeShare);
+        setShareStatus('Result card shared.');
+        return;
+      }
+
+      downloadResultFile(file);
+      try {
+        await navigator.clipboard?.writeText(`${text} https://${window.location.host}`);
+        setShareStatus('PNG downloaded and caption copied. Attach it anywhere you post.');
+      } catch {
+        setShareStatus('PNG downloaded. Attach it anywhere you post.');
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      setShareStatus('The result card could not be created on this browser.');
+    }
+  };
+
+  return <div className="result-share">
+    <button className="share-button" onClick={() => void shareResult()}>SHARE WPM SNAPSHOT ↗</button>
+    {shareStatus && <small role="status">{shareStatus}</small>}
+  </div>;
+}
+
+function PracticeBreakdown({ result }: { result: SavedResult }) {
+  const insights = practiceCoaching({
+    passage: result.passage.text,
+    input: result.input,
+    metrics: result.metrics,
+    profile: result.typingProfile,
+  });
+  return <section className="result-details practice-breakdown">
+    <header><div><span className="eyebrow">PERSONAL COACH</span><h2>Turn this run into the next one.</h2></div><p>These tips use your accuracy, first-attempt slips, corrections, and typing rhythm from this run. They stay on this device.</p></header>
+    <div className="coach-grid">
+      {insights.map((insight) => <article key={`${insight.label}-${insight.title}`}>
+        <span>{insight.label}</span><h3>{insight.title}</h3><p>{insight.body}</p>
+      </article>)}
+    </div>
+  </section>;
+}
+
+function CompetitiveBreakdown({ result, playerHandle }: { result: SavedResult; playerHandle?: string }) {
+  const opponentMetrics = result.creatorMetrics ?? result.match?.opponentMetrics;
+  const opponentHandle = result.creatorHandle ?? result.match?.opponentHandle;
+  const waiting = !opponentMetrics;
+  const waitingCopy = result.mode === 'ranked'
+    ? 'Your result is banked. This comparison updates automatically when a compatible rival finishes.'
+    : 'Share the challenge link. Your rival will see both complete stat lines after finishing the same passage.';
+
+  return <section className="result-details versus-breakdown">
+    <header><div><span className="eyebrow">HEAD-TO-HEAD</span><h2>Both performances, side by side.</h2></div><p>{waiting ? waitingCopy : 'Same passage, same clock, full comparison. Accuracy clears the gate before performance score decides the result.'}</p></header>
+    <div className="versus-grid">
+      <CompetitorResult label="YOU" handle={playerHandle ?? 'Guest Rival'} metrics={result.metrics} />
+      <div className="versus-mark">VS</div>
+      {opponentMetrics
+        ? <CompetitorResult label="RIVAL" handle={opponentHandle ?? 'Rival'} metrics={opponentMetrics} />
+        : <article className="competitor-card waiting-rival"><span>RIVAL</span><strong>?</strong><b>{result.mode === 'ranked' ? 'FINDING A MATCH' : 'AWAITING CHALLENGER'}</b><small>Stats unlock after the rival run.</small></article>}
+    </div>
+  </section>;
+}
+
+function CompetitorResult({ label, handle, metrics }: { label: string; handle: string; metrics: TypingMetrics }) {
+  return <article className="competitor-card">
+    <span>{label}</span><h3>{handle}</h3>
+    <strong>{Math.round(metrics.netWpm)}<small>WPM</small></strong>
+    <div><b>{metrics.accuracy.toFixed(1)}%<small>ACCURACY</small></b><b>{metrics.incorrectChars}<small>ERRORS</small></b><b>{Math.round(metrics.performanceScore)}<small>SCORE</small></b></div>
+  </article>;
+}
+
+function downloadResultFile(file: File) {
+  const url = URL.createObjectURL(file);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = file.name;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
 function Leaderboard({ data, onBack }: { data: Bootstrap; onBack: () => void }) {

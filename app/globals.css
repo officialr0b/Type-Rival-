@@ -176,7 +176,38 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .result-grid .race-metric { min-height: 5.3rem; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .result-grid .race-metric:nth-child(even) { border-right: 0; }
 .opponent-result { margin: 1rem 0 0; color: var(--muted); font-size: 0.76rem; text-align: center; }
+.result-detail-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid var(--border); }
+.result-detail-strip > span { display: grid; min-height: 4.2rem; place-content: center; gap: 0.25rem; border-right: 1px solid var(--border); text-align: center; }
+.result-detail-strip > span:last-child { border-right: 0; }
+.result-detail-strip small { color: var(--muted); font-size: 0.43rem; font-weight: 950; letter-spacing: 0.08em; }
+.result-detail-strip b { font-size: 0.82rem; }
+.result-share { display: grid; gap: 0.45rem; margin-top: 1rem; }
+.result-share .share-button { width: 100%; margin: 0; }
+.result-share small { color: var(--cyan); font-size: 0.62rem; line-height: 1.45; text-align: center; }
 .result-actions { display: grid; grid-template-columns: 1fr 1fr; margin-top: 1rem; }
+.result-details { grid-column: 1 / -1; width: 100%; padding-top: clamp(1rem, 2vw, 2rem); border-top: 1px solid var(--border); }
+.result-details > header { display: flex; align-items: end; justify-content: space-between; gap: 2rem; margin-bottom: 1rem; }
+.result-details > header h2 { max-width: 16ch; margin: 0.5rem 0 0; font-size: clamp(2rem, 4vw, 3.6rem); letter-spacing: -0.055em; line-height: 1; }
+.result-details > header p { max-width: 37rem; margin: 0; color: var(--muted); font-size: 0.76rem; line-height: 1.65; }
+.coach-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--border); }
+.coach-grid article { min-height: 13rem; padding: clamp(1.1rem, 2vw, 1.5rem); border-right: 1px solid var(--border); background: var(--panel); }
+.coach-grid article:last-child { border-right: 0; }
+.coach-grid article > span, .competitor-card > span { color: var(--cyan); font-size: 0.55rem; font-weight: 950; letter-spacing: 0.14em; }
+.coach-grid h3 { margin: 1.3rem 0 0.65rem; font-size: 1.25rem; letter-spacing: -0.035em; line-height: 1.15; }
+.coach-grid p { margin: 0; color: var(--muted); font-size: 0.75rem; line-height: 1.7; }
+.versus-grid { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: stretch; border: 1px solid var(--border); background: var(--panel); }
+.versus-mark { display: grid; width: 4.6rem; place-items: center; border-inline: 1px solid var(--border); color: var(--orange); font-size: 0.72rem; font-weight: 1000; letter-spacing: 0.1em; }
+.competitor-card { display: grid; min-height: 17rem; align-content: start; padding: clamp(1.15rem, 3vw, 2rem); }
+.competitor-card h3 { margin: 0.4rem 0 1.2rem; font-size: 1.35rem; letter-spacing: -0.035em; }
+.competitor-card > strong { display: flex; align-items: baseline; gap: 0.6rem; font-size: clamp(4rem, 8vw, 6.5rem); letter-spacing: -0.08em; line-height: 0.9; }
+.competitor-card > strong > small { color: var(--cyan); font-size: 0.62rem; letter-spacing: 0.12em; }
+.competitor-card > div { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 1.5rem; border-block: 1px solid var(--border); }
+.competitor-card > div > b { display: grid; gap: 0.25rem; padding: 0.8rem 0.5rem 0.8rem 0; font-size: 0.9rem; }
+.competitor-card > div small { color: var(--muted); font-size: 0.43rem; letter-spacing: 0.08em; }
+.waiting-rival { place-content: center; text-align: center; }
+.waiting-rival > strong { display: block; color: var(--border-bright); font-size: 6rem; }
+.waiting-rival > b { color: var(--muted); font-size: 0.62rem; letter-spacing: 0.1em; }
+.waiting-rival > small { margin-top: 0.5rem; color: var(--muted); font-size: 0.64rem; }
 
 .leaderboard-page, .legal-page { min-height: calc(100svh - 8rem); padding: clamp(3rem, 7vw, 6rem) 0; }
 .leaderboard-page > header { display: flex; align-items: end; justify-content: space-between; gap: 2rem; }
@@ -285,6 +316,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .launch-mode-grid { grid-template-columns: 1fr; }
   .launch-card { min-height: 15rem; border-right: 0; border-bottom: 1px solid var(--border); }
   .launch-card:last-child { border-bottom: 0; }
+  .result-details > header { align-items: start; flex-direction: column; gap: 0.75rem; }
 }
 
 @media (max-width: 620px) {
@@ -321,6 +353,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .site-footer { align-items: flex-start; flex-direction: column; }
   .account-grid { grid-template-columns: 1fr; }
   .danger-card { grid-column: auto; }
+  .result-detail-strip { grid-template-columns: repeat(2, 1fr); }
+  .result-detail-strip > span:nth-child(2) { border-right: 0; }
+  .result-detail-strip > span:nth-child(-n + 2) { border-bottom: 1px solid var(--border); }
+  .coach-grid { grid-template-columns: 1fr; }
+  .coach-grid article { min-height: 0; border-right: 0; border-bottom: 1px solid var(--border); }
+  .coach-grid article:last-child { border-bottom: 0; }
+  .versus-grid { grid-template-columns: 1fr; }
+  .versus-mark { width: auto; min-height: 2.8rem; border: 0; border-block: 1px solid var(--border); }
+  .competitor-card { min-height: 0; }
+  .competitor-card > strong { font-size: 4.5rem; }
 }
 
 @media (orientation: portrait) and (max-width: 760px) {

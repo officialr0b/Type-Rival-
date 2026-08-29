@@ -74,6 +74,8 @@ Deno.serve(async (request) => {
       response = await startRun(route[1], user);
     } else if (request.method === 'POST' && route[0] === 'sessions') {
       response = await submitSession(request, user);
+    } else if (request.method === 'GET' && route[0] === 'sessions' && route[1]) {
+      response = await loadSessionResult(route[1], user);
     } else if (route[0] === 'account' && route[1] === 'export' && request.method === 'GET') {
       response = await exportAccount(user);
     } else if (route[0] === 'account' && request.method === 'PATCH') {
@@ -413,6 +415,47 @@ async function submitSession(request: Request, user: User | null) {
   });
 }
 
+async function loadSessionResult(sessionId: string, user: User | null) {
+  if (!user) return json({ error: 'Sign in to view a ranked result.' }, 401);
+  const selected = await admin.from('sessions')
+    .select('id, user_id, mode, match_status, matched_session_id, outcome, rating_delta')
+    .eq('id', sessionId).eq('user_id', user.id).eq('mode', 'ranked').maybeSingle();
+  if (selected.error) throw selected.error;
+  if (!selected.data) return json({ error: 'Ranked result not found.' }, 404);
+  if (selected.data.match_status !== 'matched' || !selected.data.matched_session_id) {
+    return json({ match: { status: selected.data.match_status } });
+  }
+
+  const [opponentSession, currentPlayer] = await Promise.all([
+    admin.from('sessions')
+      .select('id, user_id, correct_chars, incorrect_chars, gross_wpm, net_wpm, accuracy, performance_score')
+      .eq('id', selected.data.matched_session_id).maybeSingle(),
+    admin.from('players').select('rating, double_xp_until').eq('id', user.id).maybeSingle(),
+  ]);
+  if (opponentSession.error) throw opponentSession.error;
+  if (currentPlayer.error) throw currentPlayer.error;
+  if (!opponentSession.data || !currentPlayer.data) {
+    throw new ServiceError('ranked_result:linked_rows', new Error('Ranked match details unavailable.'));
+  }
+  const handle = await admin.from('players').select('handle').eq('id', opponentSession.data.user_id).maybeSingle();
+  if (handle.error) throw handle.error;
+  if (!handle.data) throw new ServiceError('ranked_result:opponent', new Error('Ranked opponent unavailable.'));
+
+  const opponentMetrics = storedSessionMetrics(opponentSession.data);
+  return json({
+    match: {
+      status: 'matched',
+      outcome: selected.data.outcome,
+      opponentHandle: handle.data.handle,
+      opponentScore: opponentMetrics.performanceScore,
+      opponentMetrics,
+      ratingDelta: round(selected.data.rating_delta ?? 0),
+      rating: round(currentPlayer.data.rating),
+      doubleXpUntil: currentPlayer.data.double_xp_until,
+    },
+  });
+}
+
 async function tryRankedMatch(sessionId: string, player: PlayerRow, passageId: string, deviceClass: DeviceClass | 'unknown') {
   const claimed = await admin.rpc('tr_claim_ranked_pair', {
     p_session_id: sessionId,
@@ -427,11 +470,18 @@ async function tryRankedMatch(sessionId: string, player: PlayerRow, passageId: s
   if (!pair) return { status: 'pending' };
 
   try {
-    const players = await admin.from('players').select('*').in('id', [pair.current_user_id, pair.opponent_user_id]);
+    const [players, sessions] = await Promise.all([
+      admin.from('players').select('*').in('id', [pair.current_user_id, pair.opponent_user_id]),
+      admin.from('sessions')
+        .select('id, correct_chars, incorrect_chars, gross_wpm, net_wpm, accuracy, performance_score')
+        .in('id', [pair.current_session_id, pair.opponent_session_id]),
+    ]);
     if (players.error) throw players.error;
+    if (sessions.error) throw sessions.error;
     const currentPlayer = players.data?.find((entry) => entry.id === pair.current_user_id) as PlayerRow | undefined;
     const opponentPlayer = players.data?.find((entry) => entry.id === pair.opponent_user_id) as PlayerRow | undefined;
-    if (!currentPlayer || !opponentPlayer) throw new Error('Ranked players unavailable.');
+    const opponentSession = sessions.data?.find((entry) => entry.id === pair.opponent_session_id);
+    if (!currentPlayer || !opponentPlayer || !opponentSession) throw new Error('Ranked players unavailable.');
 
     const decision = decideWinner(
       { accuracy: pair.current_accuracy, performanceScore: pair.current_performance_score },
@@ -466,6 +516,7 @@ async function tryRankedMatch(sessionId: string, player: PlayerRow, passageId: s
       outcome: currentOutcome,
       opponentHandle: opponentPlayer.handle,
       opponentScore: pair.opponent_performance_score,
+      opponentMetrics: storedSessionMetrics(opponentSession),
       ratingDelta: round(currentUpdated.rating - currentPlayer.rating),
       rating: round(currentUpdated.rating),
       doubleXpUntil: currentOutcome === 'win' ? boostUntil : currentPlayer.double_xp_until,
@@ -475,6 +526,17 @@ async function tryRankedMatch(sessionId: string, player: PlayerRow, passageId: s
       .in('id', [pair.current_session_id, pair.opponent_session_id]).eq('match_status', 'matching');
     throw error;
   }
+}
+
+function storedSessionMetrics(row: Record<string, unknown>) {
+  return {
+    correctChars: Number(row.correct_chars),
+    incorrectChars: Number(row.incorrect_chars),
+    grossWpm: Number(row.gross_wpm),
+    netWpm: Number(row.net_wpm),
+    accuracy: Number(row.accuracy),
+    performanceScore: Number(row.performance_score),
+  };
 }
 
 async function createChallenge(request: Request, user: User | null) {
