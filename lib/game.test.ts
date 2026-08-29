@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { PASSAGES, applyTypingEdit, calculateMetrics, choosePassage, decideWinner, detectDeviceClass, getPassage, normalizeTypingInput, xpForMode } from './game.ts';
+import { PASSAGES, applyTypingEdit, calculateMetrics, choosePassage, decideWinner, detectDeviceClass, getPassage, normalizeTypingInput, physicalKeyEdit, xpForMode } from './game.ts';
 import { updateGlicko2 } from './glicko2.ts';
 
 describe('TypeRival scoring', () => {
@@ -66,6 +66,14 @@ describe('TypeRival scoring', () => {
     assert.equal(detectDeviceClass({ userAgent: 'Mozilla/5.0 (Linux; Android 15; Pixel 9)' }), 'mobile');
     assert.equal(detectDeviceClass({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X)', platform: 'MacIntel', maxTouchPoints: 5 }), 'mobile');
     assert.equal(detectDeviceClass({ mobileHint: false, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }), 'desktop');
+  });
+
+  it('translates iPad hardware keyboard keys into race edits', () => {
+    assert.deepEqual(physicalKeyEdit('T'), { inputType: 'insertText', data: 'T' });
+    assert.deepEqual(physicalKeyEdit(' '), { inputType: 'insertText', data: ' ' });
+    assert.deepEqual(physicalKeyEdit('Backspace'), { inputType: 'deleteContentBackward', data: null });
+    assert.equal(physicalKeyEdit('v', { metaKey: true }), null);
+    assert.equal(physicalKeyEdit('Shift'), null);
   });
 
   it('blocks iOS replacements and other bulk insertions during a race', () => {

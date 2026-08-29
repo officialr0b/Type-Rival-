@@ -8,6 +8,11 @@ export type DeviceSignals = {
   maxTouchPoints?: number;
 };
 
+export type PhysicalKeyEdit = {
+  inputType: 'insertText' | 'deleteContentBackward';
+  data: string | null;
+};
+
 export type Passage = {
   id: string;
   text: string;
@@ -33,6 +38,16 @@ export function detectDeviceClass({
   if (/Android|iPhone|iPad|iPod|Mobile/i.test(userAgent)) return 'mobile';
   if (platform === 'MacIntel' && maxTouchPoints > 1) return 'mobile';
   return 'desktop';
+}
+
+export function physicalKeyEdit(
+  key: string,
+  modifiers: { altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; isComposing?: boolean } = {},
+): PhysicalKeyEdit | null {
+  if (modifiers.altKey || modifiers.ctrlKey || modifiers.metaKey || modifiers.isComposing) return null;
+  if (key === 'Backspace') return { inputType: 'deleteContentBackward', data: null };
+  if (Array.from(key).length === 1) return { inputType: 'insertText', data: key };
+  return null;
 }
 
 const LEGACY_PASSAGES: Passage[] = [

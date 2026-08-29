@@ -9,6 +9,7 @@ import {
   choosePassage,
   detectDeviceClass,
   getPassage,
+  physicalKeyEdit,
   type GameMode,
   type Passage,
   type TypingMetrics,
@@ -716,6 +717,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
   const activeRef = useRef(false);
   const currentInput = useRef('');
   const currentTotal = useRef(0);
+  const lastPhysicalEdit = useRef<{ inputType: string; data: string | null; at: number } | null>(null);
 
   const elapsedMs = durationSec * 1_000 - remainingMs;
   const metrics = useMemo(() => calculateMetrics(passage.text, input, elapsedMs, totalTypedChars), [passage.text, input, elapsedMs, totalTypedChars]);
@@ -758,6 +760,28 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
     onComplete({ passage, mode, input: finalInput, totalTypedChars: finalTotal, elapsedMs: Math.max(1_000, finalElapsed), metrics: calculateMetrics(passage.text, finalInput, finalElapsed, finalTotal) });
   }, [mode, onComplete, passage]);
 
+  const applyRaceEdit = useCallback((inputType: string, data: string | null) => {
+    if (!activeRef.current || finished.current) return;
+
+    const edit = applyTypingEdit(
+      currentInput.current,
+      inputType,
+      data,
+      passage.text.length + 20,
+      mode !== 'ranked',
+    );
+    if (edit.value === currentInput.current) return;
+
+    const nextTotal = currentTotal.current + edit.insertedChars;
+    currentInput.current = edit.value;
+    currentTotal.current = nextTotal;
+    setInput(edit.value);
+    setTotalTypedChars(nextTotal);
+    if (edit.value === passage.text) {
+      finish(edit.value, nextTotal, Date.now() - startedAt.current);
+    }
+  }, [finish, mode, passage.text]);
+
   useEffect(() => {
     if (!armed || countdown <= 0) return;
     const timer = window.setTimeout(() => {
@@ -796,30 +820,33 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
     const handleBeforeInput = (event: InputEvent) => {
       event.preventDefault();
       resetRaceInputField(field);
-      if (!activeRef.current || finished.current) return;
-
-      const edit = applyTypingEdit(
-        currentInput.current,
-        event.inputType,
-        event.data,
-        passage.text.length + 20,
-        mode !== 'ranked',
-      );
-      if (edit.value === currentInput.current) return;
-
-      const nextTotal = currentTotal.current + edit.insertedChars;
-      currentInput.current = edit.value;
-      currentTotal.current = nextTotal;
-      setInput(edit.value);
-      setTotalTypedChars(nextTotal);
-      if (edit.value === passage.text) {
-        finish(edit.value, nextTotal, Date.now() - startedAt.current);
+      const physical = lastPhysicalEdit.current;
+      if (physical
+        && performance.now() - physical.at < 120
+        && physical.inputType === event.inputType
+        && physical.data === event.data) {
+        lastPhysicalEdit.current = null;
+        return;
       }
+      applyRaceEdit(event.inputType, event.data);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const edit = physicalKeyEdit(event.key, event);
+      if (!edit) return;
+      event.preventDefault();
+      resetRaceInputField(field);
+      lastPhysicalEdit.current = { ...edit, at: performance.now() };
+      applyRaceEdit(edit.inputType, edit.data);
     };
 
     field.addEventListener('beforeinput', handleBeforeInput);
-    return () => field.removeEventListener('beforeinput', handleBeforeInput);
-  }, [finish, mode, passage.text]);
+    field.addEventListener('keydown', handleKeyDown);
+    return () => {
+      field.removeEventListener('beforeinput', handleBeforeInput);
+      field.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [applyRaceEdit]);
 
   const armRace = async () => {
     inputRef.current?.focus();
