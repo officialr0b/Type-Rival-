@@ -4,7 +4,7 @@ import './globals.css';
 
 const deploymentHost = process.env.NEXT_PUBLIC_SITE_URL
   ?? (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : null)
-  ?? 'https://type-rival-five.vercel.app';
+  ?? 'https://www.typerival.com';
 
 export const metadata: Metadata = {
   metadataBase: new URL(deploymentHost),

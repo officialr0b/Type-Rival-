@@ -5,7 +5,7 @@ import { getSupabaseBrowserClient, isSupabaseConfigured } from '../lib/supabase-
 
 type AuthMode = 'signin' | 'signup' | 'forgot' | 'update';
 
-const canonicalSiteUrl = (process.env.NEXT_PUBLIC_SITE_URL ?? 'https://type-rival-five.vercel.app')
+const canonicalSiteUrl = (process.env.NEXT_PUBLIC_SITE_URL ?? 'https://www.typerival.com')
   .replace(/\/+$/, '');
 
 export default function AuthModal({ open, initialMode = 'signin', onClose, onAuthenticated }: {
