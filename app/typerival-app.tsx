@@ -16,8 +16,11 @@ import {
 } from '../lib/game';
 import { parseAgeBand, type AgeBand } from '../lib/age';
 import {
+  buildPracticeCoachingReport,
+  createCoachingRun,
   emptyTypingProfile,
-  practiceCoaching,
+  type CoachingRun,
+  type PracticeCoachingReport,
   type TypingProfile,
 } from '../lib/result-coaching';
 import {
@@ -52,6 +55,7 @@ type Bootstrap = {
   leaderboard: LeaderboardEntry[];
   rankedLeaderboards: { mobile: LeaderboardEntry[]; desktop: LeaderboardEntry[] };
   latestRanked: { matchStatus: string; outcome?: string; ratingDelta?: number } | null;
+  coachingHistory: CoachingRun[];
 };
 
 type Challenge = {
@@ -83,6 +87,7 @@ type RunTicket = {
 
 type SavedResult = LocalRaceResult & {
   xpEarned: number;
+  coachingReport?: PracticeCoachingReport;
   sessionId?: string;
   xpMultiplier?: number;
   saved: boolean;
@@ -162,6 +167,7 @@ const defaultBootstrap: Bootstrap = {
   leaderboard: [],
   rankedLeaderboards: { mobile: [], desktop: [] },
   latestRanked: null,
+  coachingHistory: [],
 };
 
 export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
@@ -368,14 +374,38 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
 
   const completeRace = async (localResult: LocalRaceResult) => {
     rememberPassage(localResult.passage.id);
+    const coachingHistory = bootstrap.user.signedIn && bootstrap.coachingHistory.length > 0
+      ? bootstrap.coachingHistory
+      : readLocalCoachingHistory();
+    const recentInsightKeys = coachingHistory.slice(0, 3).flatMap((run) => run.insightKeys);
+    const coachingReport = localResult.mode === 'practice'
+      ? buildPracticeCoachingReport({
+          passage: localResult.passage.text,
+          input: localResult.input,
+          metrics: localResult.metrics,
+          profile: localResult.typingProfile,
+          history: coachingHistory,
+          recentInsightKeys,
+        })
+      : undefined;
+    const enrichedResult = { ...localResult, coachingReport };
+    if (coachingReport) {
+      recordLocalCoachingRun(createCoachingRun({
+        passageId: localResult.passage.id,
+        totalTypedChars: localResult.totalTypedChars,
+        metrics: localResult.metrics,
+        profile: localResult.typingProfile,
+        insightKeys: coachingReport.insightKeys,
+      }));
+    }
     setSaving(true);
     setScreen('results');
-    setResult({ ...localResult, xpEarned: 0, saved: false });
+    setResult({ ...enrichedResult, xpEarned: 0, saved: false });
     if (!bootstrap.user.signedIn || ageBand === 'under13') {
       setLocalStats(recordLocalRun(localResult));
     }
     if (ageBand === 'under13') {
-      setResult({ ...localResult, xpEarned: 20, saved: false });
+      setResult({ ...enrichedResult, xpEarned: 20, saved: false });
       setSaving(false);
       return;
     }
@@ -396,7 +426,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
         const data = await response.json() as ChallengeAttemptApiResult;
         if (!response.ok) throw new Error(data.error ?? 'Challenge failed');
         setResult({
-          ...localResult,
+          ...enrichedResult,
           xpEarned: data.xpEarned ?? 10,
           xpMultiplier: data.xpMultiplier ?? 1,
           saved: data.saved ?? bootstrap.user.signedIn,
@@ -418,6 +448,8 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
             durationSec,
             runTicketId: runTicket?.runTicketId,
             ageBand,
+            typingProfile: localResult.typingProfile,
+            coachingInsightKeys: coachingReport?.insightKeys,
           }),
         });
         const data = await response.json() as SessionApiResult;
@@ -440,7 +472,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           const challengeData = await challengeResponse.json() as { path?: string; error?: string };
           if (challengeResponse.ok && challengeData.path) challengeUrl = `${window.location.origin}${challengeData.path}`;
         }
-        setResult({ ...localResult, ...data, challengeUrl });
+        setResult({ ...enrichedResult, ...data, challengeUrl });
         if (data.saved) void refreshBootstrap(ageBand);
       }
     } catch (error) {
@@ -843,7 +875,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
       inputType,
       data,
       passage.text.length + 20,
-      mode !== 'ranked',
+      true,
     );
     if (edit.value === previousInput) return;
 
@@ -879,7 +911,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
     if (edit.value === passage.text) {
       finish(edit.value, nextTotal, Date.now() - startedAt.current);
     }
-  }, [finish, mode, passage.text, passageCharacters]);
+  }, [finish, passage.text, passageCharacters]);
 
   useEffect(() => {
     if (!armed || countdown <= 0) return;
@@ -964,7 +996,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
 
   return (
     <main className="race-page game-page" onClick={() => inputRef.current?.focus()}>
-      <header className="race-top"><button onClick={(event) => { event.stopPropagation(); onCancel(); }}>✕ EXIT</button><span>{mode.toUpperCase()} · {mode === 'ranked' ? 'RANKED BETA' : 'OPEN INPUT'}</span><small>{mode === 'ranked' ? 'NO BACKSPACE · ' : ''}TAP PASSAGE TO REFOCUS</small></header>
+      <header className="race-top"><button onClick={(event) => { event.stopPropagation(); onCancel(); }}>✕ EXIT</button><span>{mode.toUpperCase()} · {mode === 'ranked' ? 'RANKED BETA' : 'OPEN INPUT'}</span><small>BACKSPACE ENABLED · TAP PASSAGE TO REFOCUS</small></header>
       <section className="race-hud">
         <RaceMetric value={Math.round(metrics.netWpm)} label="NET WPM" accent />
         <RaceMetric value={`${metrics.accuracy.toFixed(1)}%`} label="ACCURACY" />
@@ -1181,18 +1213,28 @@ function ShareResultButton({ result, playerHandle }: { result: SavedResult; play
 }
 
 function PracticeBreakdown({ result }: { result: SavedResult }) {
-  const insights = practiceCoaching({
+  const report = result.coachingReport ?? buildPracticeCoachingReport({
     passage: result.passage.text,
     input: result.input,
     metrics: result.metrics,
     profile: result.typingProfile,
   });
   return <section className="result-details practice-breakdown">
-    <header><div><span className="eyebrow">PERSONAL COACH</span><h2>Turn this run into the next one.</h2></div><p>These tips use your accuracy, first-attempt slips, corrections, and typing rhythm from this run. They stay on this device.</p></header>
+    <header><div><span className="eyebrow">PERSONAL COACH · SESSION {report.sessionNumber}</span><h2>Turn this run into the next one.</h2></div><p>{report.summary}</p></header>
+    <div className="coach-trend" aria-label="Recent practice trend">
+      <span><small>CURRENT</small><b>{Math.round(result.metrics.netWpm)} WPM</b></span>
+      <span><small>5-RUN BASELINE</small><b>{report.trend.baselineWpm === null ? 'BUILDING' : `${report.trend.baselineWpm.toFixed(1)} WPM`}</b></span>
+      <span><small>WPM CHANGE</small><b>{formatCoachDelta(report.trend.wpmDelta)}</b></span>
+      <span><small>CONSISTENCY</small><b>{report.trend.consistencyLabel}</b></span>
+    </div>
     <div className="coach-grid">
-      {insights.map((insight) => <article key={`${insight.label}-${insight.title}`}>
-        <span>{insight.label}</span><h3>{insight.title}</h3><p>{insight.body}</p>
+      {report.insights.map((insight) => <article key={insight.key}>
+        <span>{insight.label}</span><h3>{insight.title}</h3><p>{insight.body}</p><small>{insight.evidence}</small>
       </article>)}
+    </div>
+    <div className="coach-plan">
+      <article className="coach-target"><span>NEXT TARGET</span><strong>{report.target.wpm}<small>WPM</small></strong><b>{report.target.accuracy}%+ ACCURACY</b><p>{report.target.rationale}</p></article>
+      <article className="coach-drill"><span>FOCUS DRILL</span><h3>{report.drill.title}</h3><p>{report.drill.focus}</p><blockquote>{report.drill.text}</blockquote><small>Type this twice as a warm-up before your next full run.</small></article>
     </div>
   </section>;
 }
@@ -1476,6 +1518,11 @@ function formatDelta(value?: number) {
   return `${value >= 0 ? '+' : ''}${Math.round(value)}`;
 }
 
+function formatCoachDelta(value: number | null) {
+  if (value === null) return 'BUILDING';
+  return `${value > 0 ? '+' : ''}${value.toFixed(1)}`;
+}
+
 function isBoostActive(value?: string | null) {
   return Boolean(value && Date.parse(value) > Date.now());
 }
@@ -1486,6 +1533,39 @@ function boostMinutes(value?: string | null) {
 }
 
 type StoredRun = { netWpm: number; accuracy: number; createdAt: string };
+const LOCAL_COACHING_HISTORY_KEY = 'typerival-coaching-history-v1';
+
+function readLocalCoachingHistory(): CoachingRun[] {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(LOCAL_COACHING_HISTORY_KEY) ?? '[]') as unknown;
+    if (!Array.isArray(saved)) return [];
+    return saved.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') return [];
+      const run = entry as Partial<CoachingRun>;
+      if (typeof run.passageId !== 'string' || typeof run.createdAt !== 'string' || !run.metrics || !run.profile) return [];
+      return [createCoachingRun({
+        id: typeof run.id === 'string' ? run.id : undefined,
+        passageId: run.passageId,
+        createdAt: run.createdAt,
+        totalTypedChars: Number(run.totalTypedChars),
+        metrics: run.metrics,
+        profile: run.profile,
+        insightKeys: Array.isArray(run.insightKeys) ? run.insightKeys : [],
+      })];
+    }).slice(0, 30);
+  } catch {
+    return [];
+  }
+}
+
+function recordLocalCoachingRun(run: CoachingRun) {
+  try {
+    const history = readLocalCoachingHistory();
+    window.localStorage.setItem(LOCAL_COACHING_HISTORY_KEY, JSON.stringify([run, ...history].slice(0, 30)));
+  } catch {
+    // The current report still works when private/local storage is unavailable.
+  }
+}
 
 function browserDeviceClass() {
   const navigatorWithHints = navigator as Navigator & { userAgentData?: { mobile?: boolean } };

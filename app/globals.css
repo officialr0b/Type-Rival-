@@ -189,12 +189,29 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .result-details > header { display: flex; align-items: end; justify-content: space-between; gap: 2rem; margin-bottom: 1rem; }
 .result-details > header h2 { max-width: 16ch; margin: 0.5rem 0 0; font-size: clamp(2rem, 4vw, 3.6rem); letter-spacing: -0.055em; line-height: 1; }
 .result-details > header p { max-width: 37rem; margin: 0; color: var(--muted); font-size: 0.76rem; line-height: 1.65; }
+.coach-trend { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 1rem; border: 1px solid var(--border); background: var(--ink-soft); }
+.coach-trend > span { display: grid; min-height: 5.4rem; place-content: center; gap: 0.4rem; padding: 0.9rem; border-right: 1px solid var(--border); text-align: center; }
+.coach-trend > span:last-child { border-right: 0; }
+.coach-trend small { color: var(--muted); font-size: 0.5rem; font-weight: 950; letter-spacing: 0.11em; }
+.coach-trend b { font-size: 1rem; }
 .coach-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--border); }
 .coach-grid article { min-height: 13rem; padding: clamp(1.1rem, 2vw, 1.5rem); border-right: 1px solid var(--border); background: var(--panel); }
 .coach-grid article:last-child { border-right: 0; }
 .coach-grid article > span, .competitor-card > span { color: var(--cyan); font-size: 0.55rem; font-weight: 950; letter-spacing: 0.14em; }
 .coach-grid h3 { margin: 1.3rem 0 0.65rem; font-size: 1.25rem; letter-spacing: -0.035em; line-height: 1.15; }
 .coach-grid p { margin: 0; color: var(--muted); font-size: 0.75rem; line-height: 1.7; }
+.coach-grid article > small { display: block; margin-top: 1.15rem; color: var(--cyan); font-size: 0.56rem; font-weight: 800; letter-spacing: 0.04em; line-height: 1.5; }
+.coach-plan { display: grid; grid-template-columns: minmax(0, 0.75fr) minmax(0, 1.25fr); margin-top: 1rem; border: 1px solid var(--border); }
+.coach-plan > article { min-height: 16rem; padding: clamp(1.2rem, 2.5vw, 2rem); background: var(--panel); }
+.coach-plan > article:first-child { border-right: 1px solid var(--border); }
+.coach-plan article > span { color: var(--cyan); font-size: 0.56rem; font-weight: 950; letter-spacing: 0.15em; }
+.coach-target strong { display: flex; align-items: baseline; gap: 0.6rem; margin-top: 1.3rem; font-size: clamp(4rem, 8vw, 6.5rem); letter-spacing: -0.08em; line-height: 0.9; }
+.coach-target strong small { color: var(--muted); font-size: 0.7rem; letter-spacing: 0.08em; }
+.coach-target > b { display: block; margin-top: 1rem; color: var(--cyan); font-size: 0.7rem; letter-spacing: 0.08em; }
+.coach-plan p { color: var(--muted); font-size: 0.75rem; line-height: 1.65; }
+.coach-drill h3 { margin: 1.3rem 0 0.4rem; font-size: clamp(1.4rem, 3vw, 2.2rem); letter-spacing: -0.04em; }
+.coach-drill blockquote { margin: 1.1rem 0; padding: 1.1rem 1.2rem; border-left: 3px solid var(--cyan); background: var(--ink-soft); color: var(--text); font-size: 0.86rem; line-height: 1.7; }
+.coach-drill > small { color: var(--muted); font-size: 0.58rem; }
 .versus-grid { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: stretch; border: 1px solid var(--border); background: var(--panel); }
 .versus-mark { display: grid; width: 4.6rem; place-items: center; border-inline: 1px solid var(--border); color: var(--orange); font-size: 0.72rem; font-weight: 1000; letter-spacing: 0.1em; }
 .competitor-card { display: grid; min-height: 17rem; align-content: start; padding: clamp(1.15rem, 3vw, 2rem); }
@@ -359,6 +376,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .coach-grid { grid-template-columns: 1fr; }
   .coach-grid article { min-height: 0; border-right: 0; border-bottom: 1px solid var(--border); }
   .coach-grid article:last-child { border-bottom: 0; }
+  .coach-trend { grid-template-columns: repeat(2, 1fr); }
+  .coach-trend > span:nth-child(2) { border-right: 0; }
+  .coach-trend > span:nth-child(-n + 2) { border-bottom: 1px solid var(--border); }
+  .coach-plan { grid-template-columns: 1fr; }
+  .coach-plan > article:first-child { border-right: 0; border-bottom: 1px solid var(--border); }
   .versus-grid { grid-template-columns: 1fr; }
   .versus-mark { width: auto; min-height: 2.8rem; border: 0; border-block: 1px solid var(--border); }
   .competitor-card { min-height: 0; }
