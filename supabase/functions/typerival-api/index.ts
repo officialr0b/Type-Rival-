@@ -1,6 +1,7 @@
 import { createClient, type User } from 'npm:@supabase/supabase-js@2.112.4';
 import { calculateMetrics, decideWinner, getPassage, PASSAGES, xpForMode, type DeviceClass, type GameMode } from '../../../lib/game.ts';
 import { updateGlicko2 } from '../../../lib/glicko2.ts';
+import { createCoachingRun, type CoachingRun, type TypingProfile } from '../../../lib/result-coaching.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -179,6 +180,7 @@ async function bootstrap(url: URL, user: User | null) {
 
   let stats = { sessions: 0, averageWpm: 0, bestWpm: 0, accuracy: 0, activeDays: 0 };
   let latestRanked: Record<string, unknown> | null = null;
+  let coachingHistory: CoachingRun[] = [];
   if (player) {
     const statsQuery = await admin.rpc('tr_get_player_stats', { p_user_id: player.id, p_cutoff: cutoff });
     if (statsQuery.error) throw new ServiceError('bootstrap:stats', statsQuery.error);
@@ -204,6 +206,7 @@ async function bootstrap(url: URL, user: User | null) {
         createdAt: latest.data.created_at,
       };
     }
+    coachingHistory = await loadPracticeCoachingHistory(player.id);
   }
 
   return {
@@ -222,7 +225,40 @@ async function bootstrap(url: URL, user: User | null) {
     leaderboard,
     rankedLeaderboards,
     latestRanked,
+    coachingHistory,
   };
+}
+
+async function loadPracticeCoachingHistory(userId: string): Promise<CoachingRun[]> {
+  const selected = await admin.from('practice_coaching_runs')
+    .select('session_id, passage_id, total_typed_chars, correct_chars, incorrect_chars, gross_wpm, net_wpm, accuracy, performance_score, corrections, first_try_errors, pause_count, longest_pause_ms, longest_pause_index, mistakes, insight_keys, created_at')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(12);
+  if (selected.error) throw new ServiceError('bootstrap:coaching_history', selected.error);
+  return ((selected.data ?? []) as Record<string, unknown>[]).map((row) => createCoachingRun({
+    id: String(row.session_id),
+    passageId: String(row.passage_id),
+    createdAt: String(row.created_at),
+    totalTypedChars: Number(row.total_typed_chars),
+    metrics: {
+      correctChars: Number(row.correct_chars),
+      incorrectChars: Number(row.incorrect_chars),
+      grossWpm: Number(row.gross_wpm),
+      netWpm: Number(row.net_wpm),
+      accuracy: Number(row.accuracy),
+      performanceScore: Number(row.performance_score),
+    },
+    profile: {
+      corrections: Number(row.corrections),
+      firstTryErrors: Number(row.first_try_errors),
+      pauseCount: Number(row.pause_count),
+      longestPauseMs: Number(row.longest_pause_ms),
+      longestPauseIndex: row.longest_pause_index === null ? null : Number(row.longest_pause_index),
+      mistakes: Array.isArray(row.mistakes) ? row.mistakes as TypingProfile['mistakes'] : [],
+    },
+    insightKeys: Array.isArray(row.insight_keys) ? row.insight_keys.map(String) : [],
+  }));
 }
 
 async function issueRun(request: Request, user: User | null) {
@@ -340,6 +376,8 @@ async function submitSession(request: Request, user: User | null) {
     durationSec?: number;
     runTicketId?: string;
     ageBand?: 'under13' | 'teen' | 'adult';
+    typingProfile?: unknown;
+    coachingInsightKeys?: unknown;
   };
   const mode = body.mode;
   const passage = body.passageId ? getPassage(body.passageId) : undefined;
@@ -359,6 +397,8 @@ async function submitSession(request: Request, user: User | null) {
   }
 
   const metrics = calculateMetrics(passage.text, input, elapsedMs, totalTypedChars);
+  const coachingProfile = mode === 'practice' ? sanitizeTypingProfile(body.typingProfile) : emptySubmittedTypingProfile();
+  const coachingInsightKeys = mode === 'practice' ? sanitizeInsightKeys(body.coachingInsightKeys) : [];
   const riskStatus = runRiskStatus(metrics.grossWpm, totalTypedChars, elapsedMs);
   const baseXp = xpForMode(mode);
   if (body.ageBand === 'under13') {
@@ -396,6 +436,13 @@ async function submitSession(request: Request, user: User | null) {
     p_match_status: matchStatus,
     p_run_ticket_id: body.runTicketId,
     p_device_class: ticket.device_class,
+    p_coaching_corrections: coachingProfile.corrections,
+    p_coaching_first_try_errors: coachingProfile.firstTryErrors,
+    p_coaching_pause_count: coachingProfile.pauseCount,
+    p_coaching_longest_pause_ms: coachingProfile.longestPauseMs,
+    p_coaching_longest_pause_index: coachingProfile.longestPauseIndex,
+    p_coaching_mistakes: coachingProfile.mistakes,
+    p_coaching_insight_keys: coachingInsightKeys,
   });
   if (inserted.error) throw inserted.error;
   const session = Array.isArray(inserted.data) ? inserted.data[0] : inserted.data;
@@ -761,18 +808,20 @@ async function submitFeedback(request: Request, user: User | null) {
 
 async function exportAccount(user: User | null) {
   if (!user) return json({ error: 'Sign in to export your account.' }, 401);
-  const [profile, sessions, challenges, attempts, feedback] = await Promise.all([
+  const [profile, sessions, challenges, attempts, feedback, coaching] = await Promise.all([
     admin.from('players').select('*').eq('id', user.id).maybeSingle(),
     admin.from('sessions').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
     admin.from('challenges').select('*').eq('creator_user_id', user.id).order('created_at', { ascending: false }),
     admin.from('challenge_attempts').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
     admin.from('feedback_submissions').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
+    admin.from('practice_coaching_runs').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
   ]);
   if (profile.error) throw new ServiceError('account_export:profile', profile.error);
   if (sessions.error) throw new ServiceError('account_export:sessions', sessions.error);
   if (challenges.error) throw new ServiceError('account_export:challenges', challenges.error);
   if (attempts.error) throw new ServiceError('account_export:attempts', attempts.error);
   if (feedback.error) throw new ServiceError('account_export:feedback', feedback.error);
+  if (coaching.error) throw new ServiceError('account_export:coaching', coaching.error);
   const exportedAt = new Date().toISOString();
   return new Response(JSON.stringify({
     exportedAt,
@@ -782,6 +831,7 @@ async function exportAccount(user: User | null) {
     challenges: challenges.data,
     challengeAttempts: attempts.data,
     feedback: feedback.data,
+    practiceCoaching: coaching.data,
   }, null, 2), {
     status: 200,
     headers: {
@@ -852,6 +902,55 @@ async function freshPassageForPlayer(playerId: string, preferred: (typeof PASSAG
 
 function randomPassage(pool: typeof PASSAGES) {
   return pool[Math.floor(Math.random() * pool.length)] ?? PASSAGES[0]!;
+}
+
+function emptySubmittedTypingProfile(): TypingProfile {
+  return {
+    corrections: 0,
+    firstTryErrors: 0,
+    pauseCount: 0,
+    longestPauseMs: 0,
+    longestPauseIndex: null,
+    mistakes: [],
+  };
+}
+
+function sanitizeTypingProfile(value: unknown): TypingProfile {
+  if (!value || typeof value !== 'object') return emptySubmittedTypingProfile();
+  const submitted = value as Record<string, unknown>;
+  const mistakes = Array.isArray(submitted.mistakes)
+    ? submitted.mistakes.flatMap((entry) => {
+        if (!entry || typeof entry !== 'object') return [];
+        const mistake = entry as Record<string, unknown>;
+        const index = boundedInteger(mistake.index, 0, 2_000);
+        const expected = typeof mistake.expected === 'string' ? Array.from(mistake.expected)[0] ?? '' : '';
+        const actual = typeof mistake.actual === 'string' ? Array.from(mistake.actual)[0] ?? '' : '';
+        return [{ expected, actual, index }];
+      }).slice(0, 24)
+    : [];
+  return {
+    corrections: boundedInteger(submitted.corrections, 0, 2_000),
+    firstTryErrors: boundedInteger(submitted.firstTryErrors, 0, 2_000),
+    pauseCount: boundedInteger(submitted.pauseCount, 0, 2_000),
+    longestPauseMs: boundedInteger(submitted.longestPauseMs, 0, 120_000),
+    longestPauseIndex: submitted.longestPauseIndex === null || submitted.longestPauseIndex === undefined
+      ? null
+      : boundedInteger(submitted.longestPauseIndex, 0, 2_000),
+    mistakes,
+  };
+}
+
+function sanitizeInsightKeys(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((key): key is string => typeof key === 'string' && /^[a-z0-9:-]{1,80}$/i.test(key))
+    .slice(0, 6);
+}
+
+function boundedInteger(value: unknown, minimum: number, maximum: number) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return minimum;
+  return Math.max(minimum, Math.min(maximum, Math.round(numeric)));
 }
 
 function runRiskStatus(grossWpm: number, totalTypedChars: number, elapsedMs: number) {
