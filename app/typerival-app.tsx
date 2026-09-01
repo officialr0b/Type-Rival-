@@ -1396,7 +1396,7 @@ function Account({ player, onBack, onUpdated, onDeleted }: {
         </section>
         <section className="account-card">
           <h2>Your data</h2>
-          <p>Download a JSON copy of your profile, saved runs, friendly challenges, and challenge attempts.</p>
+          <p>Download a JSON copy of your profile, saved runs, Practice coaching history, friendly challenges, and challenge attempts.</p>
           <button className="secondary-button" onClick={() => void downloadExport()} disabled={busy}>DOWNLOAD MY DATA</button>
         </section>
         <section className="account-card danger-card">
@@ -1414,16 +1414,16 @@ function Legal({ onBack }: { onBack: () => void }) {
   return (
     <main className="legal-page">
       <button className="back-button" onClick={onBack}>← BACK HOME</button>
-      <span className="eyebrow">TERMS, PRIVACY & FAIR PLAY · UPDATED AUGUST 28, 2026</span><h1>Fair play comes first.</h1>
+      <span className="eyebrow">TERMS, PRIVACY & FAIR PLAY · UPDATED SEPTEMBER 1, 2026</span><h1>Fair play comes first.</h1>
       <div className="legal-grid">
         <article><h2>Agreement and eligibility</h2><p>By creating an account or using online competition, you agree to these MVP terms. Players must be at least 13 to create an account. Visitors under 13 may use private, device-only practice and must not submit personal information.</p></article>
         <article><h2>Free MVP</h2><p>TypeRival currently has no entry fees, wagers, cash wallet, purchasable competitive advantage, or cash prizes. XP has no cash value and cannot be transferred, sold, or redeemed.</p></article>
         <article><h2>Scoring</h2><p>Net WPM is based on correct characters and errors. A player below 90% accuracy cannot defeat a player at or above 90%. Remaining ties use performance score, then accuracy. Clear signed-in runs can enter the rolling 30-day leaderboard immediately.</p></article>
         <article><h2>Fair play</h2><p>Automated typing, scripts, macros, emulators used to falsify input, account sharing, collusion, exploiting bugs, and manipulating results are prohibited. TypeRival may hold, remove, or invalidate suspicious results and restrict accounts that threaten the competition.</p></article>
-        <article><h2>Information collected</h2><p>For signed-in players, TypeRival stores an account identifier, email through the authentication provider, public handle, run metrics, passage and timing data, XP, rating, match outcomes, and challenge activity. Operational systems may process IP addresses, device details, and request logs for security and reliability.</p></article>
+        <article><h2>Information collected</h2><p>For signed-in players, TypeRival stores an account identifier, email through the authentication provider, public handle, run metrics, passage and timing data, broad device class, XP, rating, match outcomes, and challenge activity. Practice coaching also stores limited derived signals such as corrections, first-attempt character substitutions, and major hesitations. Operational systems may process IP addresses, device details, and request logs for security and reliability.</p></article>
         <article><h2>How information is used</h2><p>Information is used to authenticate players, save progress, calculate rankings, operate challenges, prevent abuse, troubleshoot failures, and improve the service. TypeRival does not sell personal information or use gameplay data for third-party advertising in this MVP.</p></article>
         <article><h2>Sharing and processors</h2><p>Supabase processes authentication and database data, while Vercel hosts the web application and operational logs. Google processes information when Google sign-in is selected. Data may also be disclosed when required by law or necessary to protect users and the service.</p></article>
-        <article><h2>Retention and control</h2><p>Saved gameplay remains while an account is active unless operational or legal needs require a different period. Players can download their TypeRival data and permanently delete their account from the Account page. Local-only practice can be removed by clearing browser site data.</p></article>
+        <article><h2>Retention and control</h2><p>Saved gameplay and signed-in coaching history remain while an account is active unless operational or legal needs require a different period. Players can download their TypeRival data and permanently delete their account from the Account page. Guest and under-13 coaching history stays on the device and can be removed by clearing browser site data.</p></article>
         <article><h2>Security and availability</h2><p>TypeRival uses access controls, server validation, encrypted network connections, and rate limits, but no online service can guarantee absolute security or uninterrupted availability. The beta may change, pause, or remove features as it develops.</p></article>
         <article><h2>Challenges and conduct</h2><p>Friendly links expire after seven days and may be shared by anyone who receives them. Challenge results do not change ranked rating. Do not use handles or shared links to impersonate, harass, threaten, or expose another person’s private information.</p></article>
         <article><h2>Account enforcement</h2><p>Accounts or results may be limited or removed for cheating, abuse, unlawful conduct, security threats, or repeated violations. Players remain responsible for activity performed through their account and should protect their sign-in credentials.</p></article>
