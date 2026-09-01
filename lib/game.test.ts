@@ -56,7 +56,7 @@ describe('TypeRival scoring', () => {
     assert.deepEqual(applyTypingEdit(value, 'deleteContentBackward', null, 20), { value: 'The coas', insertedChars: 0 });
   });
 
-  it('allows Practice corrections while Ranked can lock backspace', () => {
+  it('allows corrections when a mode enables backspace', () => {
     assert.deepEqual(applyTypingEdit('mistkae', 'deleteContentBackward', null, 20, true), { value: 'mistka', insertedChars: 0 });
     assert.deepEqual(applyTypingEdit('mistkae', 'deleteContentBackward', null, 20, false), { value: 'mistkae', insertedChars: 0 });
   });
