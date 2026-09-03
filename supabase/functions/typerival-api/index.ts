@@ -4,12 +4,17 @@ import {
   calculateMetrics,
   decideWinner,
   getPassage,
+  isPassageCategory,
   isTypingLanguage,
+  normalizeTypingInput,
   passagesForLanguage,
+  passagesForSelection,
   rankedPassageForLanguage,
   xpForMode,
   type DeviceClass,
   type GameMode,
+  type Passage,
+  type PassageCategorySelection,
   type TypingLanguage,
 } from '../../../lib/game.ts';
 import { updateGlicko2 } from '../../../lib/glicko2.ts';
@@ -80,6 +85,10 @@ Deno.serve(async (request) => {
     let response: Response;
     if (request.method === 'GET' && route[0] === 'bootstrap') {
       response = json(await bootstrap(url, user));
+    } else if (request.method === 'GET' && route[0] === 'passages' && route[1] === 'submissions') {
+      response = await listPassageSubmissions(user);
+    } else if (request.method === 'POST' && route[0] === 'passages' && route[1] === 'submissions') {
+      response = await submitPassage(request, user);
     } else if (request.method === 'POST' && route[0] === 'feedback') {
       response = await submitFeedback(request, user);
     } else if (request.method === 'POST' && route[0] === 'runs') {
@@ -288,6 +297,8 @@ async function issueRun(request: Request, user: User | null) {
     durationSec?: number;
     ageBand?: 'under13' | 'teen' | 'adult';
     deviceClass?: DeviceClass;
+    category?: PassageCategorySelection;
+    challengeCode?: string;
   };
   if (body.ageBand !== 'teen' && body.ageBand !== 'adult') {
     return json({ error: 'Saved runs are available for players 13 and older.' }, 403);
@@ -310,14 +321,29 @@ async function issueRun(request: Request, user: User | null) {
   if (requestedPassage && requestedPassage.language !== language) {
     return json({ error: 'The passage does not match the selected language.' }, 409);
   }
+  const category: PassageCategorySelection = body.category === 'all' || isPassageCategory(body.category) ? body.category : 'all';
+  let challengePassage: Passage | undefined;
+  if (body.mode === 'challenge' && typeof body.challengeCode === 'string') {
+    const loaded = await admin.from('challenges').select('*')
+      .eq('code', body.challengeCode.toUpperCase())
+      .gt('expires_at', new Date().toISOString())
+      .maybeSingle();
+    if (loaded.error) throw loaded.error;
+    if (!loaded.data) return json({ error: 'Challenge not found or expired.' }, 404);
+    challengePassage = passageFromChallenge(loaded.data);
+    if (body.passageId && challengePassage?.id !== body.passageId) {
+      return json({ error: 'The challenge passage does not match this run.' }, 409);
+    }
+  }
   const passage = body.mode === 'ranked'
     ? rankedPassageForLanguage(language)
     : body.mode === 'challenge'
-      ? requestedPassage
+      ? challengePassage ?? requestedPassage
       : requestedPassage
-        ? await freshPassageForPlayer(player.id, requestedPassage, language)
+        ? await freshPassageForPlayer(player.id, requestedPassage, language, category)
         : undefined;
   if (!passage) return json({ error: 'Invalid run passage.' }, 400);
+  if (passage.language !== language) return json({ error: 'The passage does not match the selected language.' }, 409);
 
   const expiresAt = new Date(Date.now() + 10 * 60 * 1_000).toISOString();
   const inserted = await admin.from('run_tickets').insert({
@@ -626,21 +652,63 @@ async function createChallenge(request: Request, user: User | null) {
     elapsedMs?: number;
     totalTypedChars?: number;
     ageBand?: 'under13' | 'teen' | 'adult';
+    customPassage?: {
+      title?: string;
+      text?: string;
+      language?: TypingLanguage;
+      category?: string;
+      sourceName?: string;
+      sourceUrl?: string;
+    };
   };
   if (body.ageBand !== 'teen' && body.ageBand !== 'adult') {
     return json({ error: 'Friendly challenges are available for players 13 and older.' }, 403);
   }
-  const passage = body.passageId ? getPassage(body.passageId) : undefined;
   const durationSec = Number(body.durationSec);
-  const input = typeof body.input === 'string' ? body.input.slice(0, 1_000) : '';
+  const input = typeof body.input === 'string' ? body.input.slice(0, 2_000) : '';
   const elapsedMs = Number(body.elapsedMs);
   const totalTypedChars = Number(body.totalTypedChars);
+  const player = await ensurePlayer(user);
+  const customPassage = sanitizeCustomPassage(body.customPassage);
+  if (body.customPassage && !customPassage) {
+    return json({ error: 'Custom passages need a title, 80–1,500 characters, a language, and a category.' }, 400);
+  }
+  if (customPassage) {
+    if (![30, 45, 60, 120].includes(durationSec) || elapsedMs < 1_000 || elapsedMs > durationSec * 1_000 + 1_500 || totalTypedChars < input.length || totalTypedChars > 2_000) {
+      return json({ error: 'Invalid custom challenge run.' }, 400);
+    }
+    const metrics = calculateMetrics(customPassage.text, input, elapsedMs, totalTypedChars);
+    const code = crypto.randomUUID().replaceAll('-', '').slice(0, 8).toUpperCase();
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000).toISOString();
+    const passageId = `custom-${code.toLowerCase()}`;
+    const created = await admin.from('challenges').insert({
+      code,
+      creator_user_id: player.id,
+      creator_handle: player.handle,
+      source_session_id: null,
+      passage_id: passageId,
+      language: customPassage.language,
+      duration_sec: durationSec,
+      creator_input: input,
+      creator_elapsed_ms: Math.round(elapsedMs),
+      creator_total_typed_chars: Math.round(totalTypedChars),
+      custom_title: customPassage.title,
+      custom_text: customPassage.text,
+      custom_category: customPassage.category,
+      custom_source_name: customPassage.learning?.sourceLabel ?? null,
+      custom_source_url: customPassage.learning?.sourceUrl ?? null,
+      expires_at: expiresAt,
+    });
+    if (created.error) throw created.error;
+    return json({ code, creatorHandle: player.handle, metrics, path: `/?challenge=${code}`, expiresAt, unverified: true });
+  }
+
+  const passage = body.passageId ? getPassage(body.passageId) : undefined;
   if (!passage || ![30, 45, 60, 120].includes(durationSec) || elapsedMs < 1_000 || elapsedMs > durationSec * 1_000 + 1_500) {
     return json({ error: 'Invalid challenge run.' }, 400);
   }
   if (typeof body.sessionId !== 'string') return json({ error: 'The source run was not saved.' }, 409);
 
-  const player = await ensurePlayer(user);
   const source = await admin.from('sessions').select('id, passage_id, language, duration_ms, net_wpm, accuracy, risk_status')
     .eq('id', body.sessionId).eq('user_id', player.id).eq('mode', 'friendly').maybeSingle();
   if (source.error) throw source.error;
@@ -676,7 +744,7 @@ async function loadChallenge(code: string, user: User | null) {
     .gt('expires_at', new Date().toISOString()).maybeSingle();
   if (loaded.error) throw loaded.error;
   if (!loaded.data) return json({ error: 'Challenge not found or expired.' }, 404);
-  const passage = getPassage(loaded.data.passage_id);
+  const passage = passageFromChallenge(loaded.data);
   if (!passage) return json({ error: 'Challenge passage is unavailable.' }, 404);
   const creatorMetrics = calculateMetrics(passage.text, loaded.data.creator_input, loaded.data.creator_elapsed_ms, loaded.data.creator_total_typed_chars);
   let latestAttempt: Record<string, unknown> | undefined;
@@ -714,6 +782,7 @@ async function loadChallenge(code: string, user: User | null) {
     code: loaded.data.code,
     creatorHandle: loaded.data.creator_handle,
     passageId: passage.id,
+    passage,
     durationSec: loaded.data.duration_sec,
     creatorMetrics: { netWpm: creatorMetrics.netWpm, accuracy: creatorMetrics.accuracy },
     expiresAt: loaded.data.expires_at,
@@ -726,7 +795,7 @@ async function attemptChallenge(request: Request, code: string, user: User | nul
     .gt('expires_at', new Date().toISOString()).maybeSingle();
   if (loaded.error) throw loaded.error;
   if (!loaded.data) return json({ error: 'Challenge not found or expired.' }, 404);
-  const passage = getPassage(loaded.data.passage_id);
+  const passage = passageFromChallenge(loaded.data);
   if (!passage) return json({ error: 'Challenge passage is unavailable.' }, 404);
   const body = await request.json() as {
     input?: string;
@@ -739,7 +808,7 @@ async function attemptChallenge(request: Request, code: string, user: User | nul
   if (body.ageBand !== 'teen' && body.ageBand !== 'adult') {
     return json({ error: 'Friendly challenges are available for players 13 and older.' }, 403);
   }
-  const input = typeof body.input === 'string' ? body.input.slice(0, 1_000) : '';
+  const input = typeof body.input === 'string' ? body.input.slice(0, 2_000) : '';
   const elapsedMs = Number(body.elapsedMs);
   const totalTypedChars = Number(body.totalTypedChars);
   const durationSec = Number(body.durationSec);
@@ -753,7 +822,7 @@ async function attemptChallenge(request: Request, code: string, user: User | nul
   const outcome = decision === 'a' ? 'win' : decision === 'b' ? 'loss' : 'draw';
   const riskStatus = runRiskStatus(challenger.grossWpm, totalTypedChars, elapsedMs);
   if (!user) {
-    return json({ outcome, challenger, creator, creatorHandle: loaded.data.creator_handle, saved: false, xpEarned: 10, xpMultiplier: 1, doubleXpUntil: null, riskStatus });
+    return json({ outcome, challenger, creator, creatorHandle: loaded.data.creator_handle, saved: false, xpEarned: passage.sourceType === 'custom' ? 0 : 10, xpMultiplier: 1, doubleXpUntil: null, riskStatus });
   }
   if (typeof body.runTicketId !== 'string') return json({ error: 'Start a new authorized run before submitting.' }, 409);
   await consumeRunTicket(user, body.runTicketId, 'challenge', passage.id, passage.language, durationSec, elapsedMs);
@@ -762,6 +831,32 @@ async function attemptChallenge(request: Request, code: string, user: User | nul
   }
 
   const player = await ensurePlayer(user);
+  if (passage.sourceType === 'custom') {
+    const recorded = await admin.from('challenge_attempts').insert({
+      challenge_id: loaded.data.id,
+      user_id: player.id,
+      input,
+      elapsed_ms: Math.round(elapsedMs),
+      total_typed_chars: Math.round(totalTypedChars),
+      net_wpm: challenger.netWpm,
+      accuracy: challenger.accuracy,
+      performance_score: challenger.performanceScore,
+      outcome,
+      risk_status: riskStatus,
+    });
+    if (recorded.error) throw recorded.error;
+    return json({
+      outcome,
+      challenger,
+      creator,
+      creatorHandle: loaded.data.creator_handle,
+      saved: true,
+      xpEarned: 0,
+      xpMultiplier: 1,
+      riskStatus,
+      doubleXpUntil: player.double_xp_until,
+    });
+  }
   const xpMultiplier = player.double_xp_until && Date.parse(player.double_xp_until) > Date.now() ? 2 : 1;
   const xpEarned = 10 * xpMultiplier;
   const boostUntil = new Date(Date.now() + DOUBLE_XP_MS).toISOString();
@@ -791,6 +886,139 @@ async function attemptChallenge(request: Request, code: string, user: User | nul
     riskStatus,
     doubleXpUntil: outcome === 'win' ? boostUntil : player.double_xp_until,
   });
+}
+
+function passageFromChallenge(row: Record<string, unknown>): Passage | undefined {
+  if (typeof row.custom_text !== 'string' || typeof row.custom_title !== 'string' || !isPassageCategory(row.custom_category) || !isTypingLanguage(row.language)) {
+    return typeof row.passage_id === 'string' ? getPassage(row.passage_id) : undefined;
+  }
+  const sourceUrl = safeSourceUrl(row.custom_source_url);
+  const sourceLabel = typeof row.custom_source_name === 'string' && row.custom_source_name.trim()
+    ? row.custom_source_name.trim().slice(0, 120)
+    : sourceUrl ? new URL(sourceUrl).hostname.replace(/^www\./, '') : '';
+  return {
+    id: String(row.passage_id),
+    title: row.custom_title,
+    text: normalizePassageText(row.custom_text),
+    language: row.language,
+    category: row.custom_category,
+    sourceType: 'custom',
+    learning: sourceUrl ? {
+      summary: 'This source was supplied by the passage creator and has not been reviewed by TypeRival.',
+      sourceLabel,
+      sourceUrl,
+    } : undefined,
+  };
+}
+
+function sanitizeCustomPassage(value: unknown): Passage | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Record<string, unknown>;
+  const title = typeof candidate.title === 'string' ? normalizePassageText(candidate.title).slice(0, 80) : '';
+  const text = typeof candidate.text === 'string' ? normalizePassageText(candidate.text) : '';
+  if (title.length < 3 || text.length < 80 || text.length > 1_500 || !isTypingLanguage(candidate.language) || !isPassageCategory(candidate.category)) return null;
+  const sourceUrl = safeSourceUrl(candidate.sourceUrl);
+  if (candidate.sourceUrl && !sourceUrl) return null;
+  const sourceLabel = typeof candidate.sourceName === 'string' && candidate.sourceName.trim()
+    ? normalizePassageText(candidate.sourceName).slice(0, 120)
+    : sourceUrl ? new URL(sourceUrl).hostname.replace(/^www\./, '') : '';
+  return {
+    id: 'custom-pending',
+    title,
+    text,
+    language: candidate.language,
+    category: candidate.category,
+    sourceType: 'custom',
+    learning: sourceUrl ? {
+      summary: 'This source was supplied by the passage creator and has not been reviewed by TypeRival.',
+      sourceLabel,
+      sourceUrl,
+    } : undefined,
+  };
+}
+
+async function listPassageSubmissions(user: User | null) {
+  if (!user) return json({ error: 'Sign in to view your passage submissions.' }, 401);
+  const submissions = await admin.from('passage_submissions')
+    .select('id, title, language, category, source_name, source_url, status, moderator_note, created_at, updated_at')
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false })
+    .limit(50);
+  if (submissions.error) throw new ServiceError('passages:list', submissions.error);
+  return json({ submissions: submissions.data.map(publicSubmission) });
+}
+
+async function submitPassage(request: Request, user: User | null) {
+  if (!user) return json({ error: 'Sign in to submit a passage.' }, 401);
+  const body = await request.json() as {
+    title?: string;
+    text?: string;
+    language?: TypingLanguage;
+    category?: string;
+    sourceName?: string;
+    sourceUrl?: string;
+    rightsAttested?: boolean;
+    ageBand?: 'under13' | 'teen' | 'adult';
+  };
+  if (body.ageBand !== 'teen' && body.ageBand !== 'adult') {
+    return json({ error: 'Public passage submissions are available for players 13 and older.' }, 403);
+  }
+  const title = typeof body.title === 'string' ? normalizePassageText(body.title).slice(0, 81) : '';
+  const text = typeof body.text === 'string' ? normalizePassageText(body.text) : '';
+  const sourceName = typeof body.sourceName === 'string' ? normalizePassageText(body.sourceName).slice(0, 121) : '';
+  const sourceUrl = safeSourceUrl(body.sourceUrl);
+  if (title.length < 3 || title.length > 80) return json({ error: 'Use a title between 3 and 80 characters.' }, 400);
+  if (text.length < 120 || text.length > 1_500) return json({ error: 'Public submissions must be between 120 and 1,500 characters.' }, 400);
+  if (!isTypingLanguage(body.language) || !isPassageCategory(body.category)) return json({ error: 'Choose a supported language and category.' }, 400);
+  if (sourceName.length > 120) return json({ error: 'Source name must be 120 characters or fewer.' }, 400);
+  if (body.sourceUrl && !sourceUrl) return json({ error: 'Source links must use https.' }, 400);
+  if (body.rightsAttested !== true) return json({ error: 'Confirm that you wrote this passage or have permission to submit it.' }, 400);
+
+  const player = await ensurePlayer(user);
+  const contentHash = await sha256(`${body.language}\n${text.toLocaleLowerCase(body.language)}`);
+  const inserted = await admin.from('passage_submissions').insert({
+    user_id: player.id,
+    title,
+    text,
+    language: body.language,
+    category: body.category,
+    source_name: sourceName || null,
+    source_url: sourceUrl,
+    rights_attested: true,
+    content_hash: contentHash,
+  }).select('id, title, language, category, source_name, source_url, status, moderator_note, created_at, updated_at').single();
+  if (inserted.error?.code === '23505') return json({ error: 'You already submitted this passage.' }, 409);
+  if (inserted.error) throw new ServiceError('passages:submit', inserted.error);
+  return json({ submission: publicSubmission(inserted.data) }, 201);
+}
+
+function publicSubmission(row: Record<string, unknown>) {
+  return {
+    id: String(row.id),
+    title: String(row.title),
+    language: String(row.language),
+    category: String(row.category),
+    sourceName: typeof row.source_name === 'string' ? row.source_name : null,
+    sourceUrl: typeof row.source_url === 'string' ? row.source_url : null,
+    status: String(row.status),
+    moderatorNote: typeof row.moderator_note === 'string' ? row.moderator_note : null,
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function normalizePassageText(value: string) {
+  return normalizeTypingInput(value).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function safeSourceUrl(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try {
+    const parsed = new URL(value.trim());
+    return parsed.protocol === 'https:' && parsed.href.length <= 500 ? parsed.href : null;
+  } catch {
+    return null;
+  }
 }
 
 async function updateAccount(request: Request, user: User | null) {
@@ -839,13 +1067,14 @@ async function submitFeedback(request: Request, user: User | null) {
 
 async function exportAccount(user: User | null) {
   if (!user) return json({ error: 'Sign in to export your account.' }, 401);
-  const [profile, sessions, challenges, attempts, feedback, coaching] = await Promise.all([
+  const [profile, sessions, challenges, attempts, feedback, coaching, passageSubmissions] = await Promise.all([
     admin.from('players').select('*').eq('id', user.id).maybeSingle(),
     admin.from('sessions').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
     admin.from('challenges').select('*').eq('creator_user_id', user.id).order('created_at', { ascending: false }),
     admin.from('challenge_attempts').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
     admin.from('feedback_submissions').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
     admin.from('practice_coaching_runs').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
+    admin.from('passage_submissions').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
   ]);
   if (profile.error) throw new ServiceError('account_export:profile', profile.error);
   if (sessions.error) throw new ServiceError('account_export:sessions', sessions.error);
@@ -853,6 +1082,7 @@ async function exportAccount(user: User | null) {
   if (attempts.error) throw new ServiceError('account_export:attempts', attempts.error);
   if (feedback.error) throw new ServiceError('account_export:feedback', feedback.error);
   if (coaching.error) throw new ServiceError('account_export:coaching', coaching.error);
+  if (passageSubmissions.error) throw new ServiceError('account_export:passage_submissions', passageSubmissions.error);
   const exportedAt = new Date().toISOString();
   return new Response(JSON.stringify({
     exportedAt,
@@ -863,6 +1093,7 @@ async function exportAccount(user: User | null) {
     challengeAttempts: attempts.data,
     feedback: feedback.data,
     practiceCoaching: coaching.data,
+    passageSubmissions: passageSubmissions.data,
   }, null, 2), {
     status: 200,
     headers: {
@@ -889,6 +1120,7 @@ async function withinRateLimit(request: Request, user: User | null, action: stri
     challenges: { limit: 40, seconds: 60 },
     account: { limit: 10, seconds: 60 },
     feedback: { limit: 5, seconds: 60 },
+    passages: { limit: 10, seconds: 60 },
   };
   const rule = rules[action] ?? { limit: 60, seconds: 60 };
   const forwarded = request.headers.get('x-typerival-client-ip')
@@ -910,8 +1142,9 @@ async function freshPassageForPlayer(
   playerId: string,
   preferred: ReturnType<typeof passagesForLanguage>[number],
   language: TypingLanguage,
+  category: PassageCategorySelection = 'all',
 ) {
-  const languagePassages = passagesForLanguage(language);
+  const languagePassages = passagesForSelection(language, category);
   const recent = await admin.from('sessions').select('passage_id')
     .eq('user_id', playerId)
     .eq('language', language)
@@ -934,7 +1167,7 @@ async function freshPassageForPlayer(
 }
 
 function randomPassage(
-  pool: ReturnType<typeof passagesForLanguage>,
+  pool: Passage[],
   fallback = pool,
 ) {
   return pool[Math.floor(Math.random() * pool.length)] ?? fallback[0]!;
