@@ -3,15 +3,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import AuthModal from './auth-modal';
 import {
+  DEFAULT_LANGUAGE,
   PASSAGES,
+  SUPPORTED_LANGUAGES,
   applyTypingEdit,
   calculateMetrics,
   choosePassage,
   detectDeviceClass,
   getPassage,
+  isTypingLanguage,
+  passagesForLanguage,
   physicalKeyEdit,
+  rankedPassageForLanguage,
   type GameMode,
   type Passage,
+  type TypingLanguage,
   type TypingMetrics,
 } from '../lib/game';
 import { parseAgeBand, type AgeBand } from '../lib/age';
@@ -80,6 +86,7 @@ type LocalRaceResult = {
 type RunTicket = {
   runTicketId: string;
   passageId: string;
+  language: TypingLanguage;
   durationSec: number;
   issuedAt: string;
   expiresAt: string;
@@ -177,8 +184,9 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
   configureSupabase(supabaseConfig);
   const [screen, setScreen] = useState<Screen>('home');
   const [mode, setMode] = useState<GameMode>('practice');
+  const [language, setLanguage] = useState<TypingLanguage>(DEFAULT_LANGUAGE);
   const [durationSec, setDurationSec] = useState(45);
-  const [passage, setPassage] = useState<Passage>(() => choosePassage());
+  const [passage, setPassage] = useState<Passage>(() => choosePassage([], DEFAULT_LANGUAGE));
   const [result, setResult] = useState<SavedResult | null>(null);
   const [bootstrap, setBootstrap] = useState<Bootstrap>(defaultBootstrap);
   const [loadingProfile, setLoadingProfile] = useState(true);
@@ -193,12 +201,17 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
   const [authMode, setAuthMode] = useState<'signin' | 'update'>('signin');
   const [runTicket, setRunTicket] = useState<RunTicket | null>(null);
   const ageBandRef = useRef<AgeBand | null>(null);
+  const languageRef = useRef<TypingLanguage>(DEFAULT_LANGUAGE);
   const closeAuth = useCallback(() => setAuthOpen(false), []);
 
-  const refreshBootstrap = useCallback(async (currentAge: AgeBand | null) => {
+  const refreshBootstrap = useCallback(async (
+    currentAge: AgeBand | null,
+    currentLanguage: TypingLanguage = languageRef.current,
+  ) => {
     try {
-      const query = currentAge ? `?ageBand=${currentAge}` : '';
-      const response = await authFetch(`/api/bootstrap${query}`, { cache: 'no-store' });
+      const query = new URLSearchParams({ language: currentLanguage });
+      if (currentAge) query.set('ageBand', currentAge);
+      const response = await authFetch(`/api/bootstrap?${query.toString()}`, { cache: 'no-store' });
       if (!response.ok) throw new Error('profile unavailable');
       setBootstrap(await response.json() as Bootstrap);
     } catch {
@@ -210,16 +223,20 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
 
   useEffect(() => {
     const savedAge = parseAgeBand(window.localStorage.getItem('typerival-age-band'));
+    const savedLanguage = readTypingLanguage();
     const validAge = initialAgeBand ?? savedAge;
     if (initialAgeBand) window.localStorage.setItem('typerival-age-band', initialAgeBand);
     ageBandRef.current = validAge;
+    languageRef.current = savedLanguage;
     const client = getSupabaseBrowserClient();
     const initializeTimer = window.setTimeout(() => {
       if (validAge) setAgeBand(validAge);
-      setLocalStats(readLocalStats());
+      setLanguage(savedLanguage);
+      setPassage((current) => current.language === savedLanguage ? current : choosePassage([], savedLanguage));
+      setLocalStats(readLocalStats(savedLanguage));
       // Supabase emits INITIAL_SESSION once its persisted session is ready.
       // Only fall back to a direct load when account services are not configured.
-      if (!client) void refreshBootstrap(validAge);
+      if (!client) void refreshBootstrap(validAge, savedLanguage);
     }, 0);
 
     const params = new URLSearchParams(window.location.search);
@@ -245,6 +262,8 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           if (!targetPassage) throw new Error('passage unavailable');
           setChallenge(loaded);
           setPassage(targetPassage);
+          setLanguage(targetPassage.language);
+          languageRef.current = targetPassage.language;
           setDurationSec(loaded.durationSec);
           setMode('challenge');
           setScreen('setup');
@@ -271,7 +290,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
         setAuthMode('update');
         setAuthOpen(true);
       }
-      window.setTimeout(() => void refreshBootstrap(ageBandRef.current), 0);
+      window.setTimeout(() => void refreshBootstrap(ageBandRef.current, languageRef.current), 0);
     }).data.subscription;
     return () => {
       window.clearTimeout(initializeTimer);
@@ -297,14 +316,28 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
   const authenticated = () => {
     setAuthOpen(false);
     setMessage('Signed in. Your eligible results can now be saved.');
-    void refreshBootstrap(ageBand);
+    void refreshBootstrap(ageBand, language);
   };
 
   const signOut = async () => {
     await getSupabaseBrowserClient()?.auth.signOut();
     setBootstrap(defaultBootstrap);
     setMessage('Signed out. Practice results will stay on this device.');
-    await refreshBootstrap(ageBand);
+    await refreshBootstrap(ageBand, language);
+  };
+
+  const changeLanguage = (nextLanguage: TypingLanguage) => {
+    if (nextLanguage === language) return;
+    languageRef.current = nextLanguage;
+    setLanguage(nextLanguage);
+    rememberTypingLanguage(nextLanguage);
+    setPassage(mode === 'ranked'
+      ? rankedPassageForLanguage(nextLanguage)
+      : chooseFreshPassage(undefined, nextLanguage));
+    setLocalStats(readLocalStats(nextLanguage));
+    setRunTicket(null);
+    setMessage('Typing language updated. Rankings and coaching now show this language.');
+    void refreshBootstrap(ageBandRef.current, nextLanguage);
   };
 
   const chooseMode = (nextMode: GameMode) => {
@@ -322,8 +355,8 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     }
     setMode(nextMode);
     setDurationSec(nextMode === 'ranked' ? 45 : durationSec);
-    const rankedPassage = PASSAGES[Math.floor(Date.now() / 900_000) % PASSAGES.length] ?? PASSAGES[0]!;
-    setPassage(nextMode === 'ranked' ? rankedPassage : chooseFreshPassage(passage.id));
+    const rankedPassage = rankedPassageForLanguage(language);
+    setPassage(nextMode === 'ranked' ? rankedPassage : chooseFreshPassage(passage.id, language));
     setChallenge(null);
     setRunTicket(null);
     setScreen('setup');
@@ -341,7 +374,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
       const response = await authFetch('/api/runs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ mode, passageId: passage.id, durationSec, ageBand, deviceClass: browserDeviceClass() }),
+        body: JSON.stringify({ mode, language, passageId: passage.id, durationSec, ageBand, deviceClass: browserDeviceClass() }),
       });
       const data = await response.json() as RunTicket & { error?: string };
       if (!response.ok) throw new Error(data.error ?? 'The run could not be authorized.');
@@ -376,7 +409,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     rememberPassage(localResult.passage.id);
     const coachingHistory = bootstrap.user.signedIn && bootstrap.coachingHistory.length > 0
       ? bootstrap.coachingHistory
-      : readLocalCoachingHistory();
+      : readLocalCoachingHistory(localResult.passage.language);
     const recentInsightKeys = coachingHistory.slice(0, 3).flatMap((run) => run.insightKeys);
     const coachingReport = localResult.mode === 'practice'
       ? buildPracticeCoachingReport({
@@ -473,7 +506,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           if (challengeResponse.ok && challengeData.path) challengeUrl = `${window.location.origin}${challengeData.path}`;
         }
         setResult({ ...enrichedResult, ...data, challengeUrl });
-        if (data.saved) void refreshBootstrap(ageBand);
+        if (data.saved) void refreshBootstrap(ageBand, language);
       }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'The result could not be saved.');
@@ -483,7 +516,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
   };
 
   const runAgain = () => {
-    if (mode !== 'challenge') setPassage((current) => chooseFreshPassage(current.id));
+    if (mode !== 'challenge') setPassage((current) => chooseFreshPassage(current.id, current.language));
     setResult(null);
     setRunTicket(null);
     setScreen('setup');
@@ -491,7 +524,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
 
   const applyRankedMatch = useCallback((match: NonNullable<SavedResult['match']>) => {
     setResult((current) => current ? { ...current, match } : current);
-    void refreshBootstrap(ageBandRef.current);
+    void refreshBootstrap(ageBandRef.current, languageRef.current);
   }, [refreshBootstrap]);
 
   const applyFriendlyMatch = useCallback((friendlyMatch: NonNullable<SavedResult['friendlyMatch']>) => {
@@ -500,7 +533,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
       friendlyMatch,
       doubleXpUntil: friendlyMatch.doubleXpUntil ?? current.doubleXpUntil,
     } : current);
-    void refreshBootstrap(ageBandRef.current);
+    void refreshBootstrap(ageBandRef.current, languageRef.current);
   }, [refreshBootstrap]);
 
   const saveAge = async (nextAge: AgeBand) => {
@@ -508,7 +541,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     ageBandRef.current = nextAge;
     setAgeBand(nextAge);
     if (nextAge === 'under13') await getSupabaseBrowserClient()?.auth.signOut();
-    await refreshBootstrap(nextAge);
+    await refreshBootstrap(nextAge, language);
   };
 
   const install = async () => {
@@ -522,6 +555,14 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
   };
 
   const goHome = () => {
+    const preferredLanguage = readTypingLanguage();
+    if (preferredLanguage !== language) {
+      languageRef.current = preferredLanguage;
+      setLanguage(preferredLanguage);
+      setPassage(chooseFreshPassage(undefined, preferredLanguage));
+      setLocalStats(readLocalStats(preferredLanguage));
+      void refreshBootstrap(ageBandRef.current, preferredLanguage);
+    }
     setScreen('home');
     setMode('practice');
     setChallenge(null);
@@ -550,6 +591,8 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           bootstrap={bootstrap}
           localStats={localStats}
           ageBand={ageBand}
+          language={language}
+          onLanguage={changeLanguage}
           onMode={chooseMode}
           onLeaderboard={() => setScreen('leaderboard')}
         />
@@ -560,6 +603,8 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           mode={mode}
           durationSec={durationSec}
           challenge={challenge}
+          language={language}
+          onLanguage={changeLanguage}
           onDuration={setDurationSec}
           onBack={goHome}
           onStart={() => void startRace()}
@@ -594,12 +639,12 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
         />
       )}
 
-      {screen === 'leaderboard' && <Leaderboard data={bootstrap} onBack={goHome} />}
+      {screen === 'leaderboard' && <Leaderboard data={bootstrap} language={language} onLanguage={changeLanguage} onBack={goHome} />}
       {screen === 'account' && bootstrap.user.signedIn && (
         <Account
           player={bootstrap.user}
           onBack={goHome}
-          onUpdated={() => void refreshBootstrap(ageBand)}
+          onUpdated={() => void refreshBootstrap(ageBand, language)}
           onDeleted={async () => {
             await getSupabaseBrowserClient()?.auth.signOut();
             setBootstrap(defaultBootstrap);
@@ -672,10 +717,12 @@ function Header({ player, loading, onHome, onLeaderboard, onInstall, onAccount, 
   );
 }
 
-function Home({ bootstrap, localStats, ageBand, onMode, onLeaderboard }: {
+function Home({ bootstrap, localStats, ageBand, language, onLanguage, onMode, onLeaderboard }: {
   bootstrap: Bootstrap;
   localStats: PracticeStats;
   ageBand: AgeBand | null;
+  language: TypingLanguage;
+  onLanguage: (language: TypingLanguage) => void;
   onMode: (mode: GameMode) => void;
   onLeaderboard: () => void;
 }) {
@@ -693,7 +740,7 @@ function Home({ bootstrap, localStats, ageBand, onMode, onLeaderboard }: {
           </div>
         </div>
         <div className="hero-scorecard" aria-label="Your 30-day summary">
-          <div className="scorecard-head"><span>YOUR 30 DAYS</span><em>{bootstrap.user.signedIn ? 'SYNCED' : 'LOCAL ONLY'}</em></div>
+          <div className="scorecard-head"><span>YOUR 30 DAYS · {languageName(language).toUpperCase()}</span><em>{bootstrap.user.signedIn ? 'SYNCED' : 'LOCAL ONLY'}</em></div>
           <strong>{Math.round(stats.averageWpm || 0)}</strong><small>AVERAGE WPM</small>
           <div className="mini-stats">
             <span><b>{Number(stats.accuracy || 0).toFixed(1)}%</b><small>ACCURACY</small></span>
@@ -706,6 +753,7 @@ function Home({ bootstrap, localStats, ageBand, onMode, onLeaderboard }: {
 
       <section className="modes-section">
         <div className="section-title"><span>CHOOSE YOUR MODE</span><small>{ageBand === 'under13' ? 'JUNIOR PRIVATE PRACTICE' : 'OPEN LADDER · EARLY BETA'}</small></div>
+        <LanguageSelector language={language} onLanguage={onLanguage} />
         <div className="launch-mode-grid">
           <LaunchCard number="01" title="Practice" label="LIVE" description="Build speed, accuracy, XP, and your rolling 30-day average." action="PRACTICE NOW" onClick={() => onMode('practice')} featured />
           <LaunchCard number="02" title="Ranked" label="ASYNC BETA" description="Bank one standardized run. We pair it with a rival on the same passage." action="RACE A RIVAL" onClick={() => onMode('ranked')} disabled={ageBand === 'under13'} />
@@ -725,6 +773,31 @@ function Home({ bootstrap, localStats, ageBand, onMode, onLeaderboard }: {
   );
 }
 
+function LanguageSelector({ language, onLanguage, compact = false, disabled = false }: {
+  language: TypingLanguage;
+  onLanguage: (language: TypingLanguage) => void;
+  compact?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <label className={`language-selector ${compact ? 'compact' : ''}`}>
+      <span><small>PLAY LANGUAGE</small><b>{disabled ? 'This challenge keeps its original language.' : 'Choose the language you want to type.'}</b></span>
+      <select
+        aria-label="Typing language"
+        value={language}
+        disabled={disabled}
+        onChange={(event) => {
+          if (isTypingLanguage(event.target.value)) onLanguage(event.target.value);
+        }}
+      >
+        {SUPPORTED_LANGUAGES.map((option) => (
+          <option key={option.code} value={option.code}>{option.nativeLabel}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function LaunchCard({ number, title, label, description, action, onClick, featured, disabled }: {
   number: string; title: string; label: string; description: string; action: string;
   onClick: () => void; featured?: boolean; disabled?: boolean;
@@ -738,10 +811,12 @@ function LaunchCard({ number, title, label, description, action, onClick, featur
   );
 }
 
-function Setup({ mode, durationSec, challenge, onDuration, onBack, onStart, starting }: {
+function Setup({ mode, durationSec, challenge, language, onLanguage, onDuration, onBack, onStart, starting }: {
   mode: GameMode;
   durationSec: number;
   challenge: Challenge | null;
+  language: TypingLanguage;
+  onLanguage: (language: TypingLanguage) => void;
   onDuration: (duration: number) => void;
   onBack: () => void;
   onStart: () => void;
@@ -766,6 +841,7 @@ function Setup({ mode, durationSec, challenge, onDuration, onBack, onStart, star
         </div>
       </section>
       <section className="setup-card">
+        <LanguageSelector language={language} onLanguage={onLanguage} compact disabled={mode === 'challenge'} />
         <label>RACE DURATION</label>
         <div className="duration-grid">
           {[30, 45, 60, 120].map((duration) => (
@@ -774,7 +850,7 @@ function Setup({ mode, durationSec, challenge, onDuration, onBack, onStart, star
             </button>
           ))}
         </div>
-        <div className="setup-row"><span><small>PASSAGE</small><b>Balanced original prose</b></span><em>READY</em></div>
+        <div className="setup-row"><span><small>PASSAGE</small><b>Balanced original prose · {languageName(language)}</b></span><em>READY</em></div>
         <div className="setup-row"><span><small>INPUT</small><b>Touch or physical keyboard</b></span><em>MVP OPEN CLASS</em></div>
         <button className="primary-button setup-start" onClick={onStart} disabled={starting}>{starting ? 'AUTHORIZING RUN…' : `START ${durationSec}-SECOND RUN`}</button>
       </section>
@@ -818,6 +894,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
 
   const elapsedMs = durationSec * 1_000 - remainingMs;
   const passageCharacters = useMemo(() => Array.from(passage.text), [passage.text]);
+  const inputCharacters = useMemo(() => Array.from(input), [input]);
   const metrics = useMemo(() => calculateMetrics(passage.text, input, elapsedMs, totalTypedChars), [passage.text, input, elapsedMs, totalTypedChars]);
 
   useEffect(() => {
@@ -996,13 +1073,13 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
 
   return (
     <main className="race-page game-page" onClick={() => inputRef.current?.focus()}>
-      <header className="race-top"><button onClick={(event) => { event.stopPropagation(); onCancel(); }}>✕ EXIT</button><span>{mode.toUpperCase()} · {mode === 'ranked' ? 'RANKED BETA' : 'OPEN INPUT'}</span><small>BACKSPACE ENABLED · TAP PASSAGE TO REFOCUS</small></header>
+      <header className="race-top"><button onClick={(event) => { event.stopPropagation(); onCancel(); }}>✕ EXIT</button><span>{mode.toUpperCase()} · {languageName(passage.language).toUpperCase()}</span><small>BACKSPACE ENABLED · TAP PASSAGE TO REFOCUS</small></header>
       <section className="race-hud">
         <RaceMetric value={Math.round(metrics.netWpm)} label="NET WPM" accent />
         <RaceMetric value={`${metrics.accuracy.toFixed(1)}%`} label="ACCURACY" />
         <div className="race-clock"><b>{Math.ceil(remainingMs / 1_000)}</b><small>SECONDS</small></div>
         <RaceMetric value={metrics.incorrectChars} label="ERRORS" warning={metrics.incorrectChars > 0} />
-        <RaceMetric value={`${input.length}/${passage.text.length}`} label="PROGRESS" />
+        <RaceMetric value={`${inputCharacters.length}/${passageCharacters.length}`} label="PROGRESS" />
       </section>
       <section className="passage-card">
         {!armed ? (
@@ -1013,11 +1090,11 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
           <div className="passage-wrap">
             <p aria-label={`Typing passage: ${passage.text}`}>
               {Array.from(passage.text).map((character, index) => {
-                const state = index >= input.length ? 'pending' : input[index] === character ? 'correct' : 'incorrect';
-                return <span key={index} ref={index === input.length ? currentCharacterRef : undefined} className={`${state} ${index === input.length ? 'current' : ''}`}>{character}</span>;
+                const state = index >= inputCharacters.length ? 'pending' : inputCharacters[index] === character ? 'correct' : 'incorrect';
+                return <span key={index} ref={index === inputCharacters.length ? currentCharacterRef : undefined} className={`${state} ${index === inputCharacters.length ? 'current' : ''}`}>{character}</span>;
               })}
             </p>
-            <div className="progress-track"><span style={{ width: `${Math.min(100, input.length / passage.text.length * 100)}%` }} /></div>
+            <div className="progress-track"><span style={{ width: `${Math.min(100, inputCharacters.length / passageCharacters.length * 100)}%` }} /></div>
           </div>
         )}
       </section>
@@ -1276,7 +1353,12 @@ function downloadResultFile(file: File) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
-function Leaderboard({ data, onBack }: { data: Bootstrap; onBack: () => void }) {
+function Leaderboard({ data, language, onLanguage, onBack }: {
+  data: Bootstrap;
+  language: TypingLanguage;
+  onLanguage: (language: TypingLanguage) => void;
+  onBack: () => void;
+}) {
   const [board, setBoard] = useState<'open' | 'ranked'>('open');
   const [rankedDevice, setRankedDevice] = useState<'mobile' | 'desktop'>('mobile');
   const entries = board === 'open' ? data.leaderboard : data.rankedLeaderboards[rankedDevice];
@@ -1287,7 +1369,8 @@ function Leaderboard({ data, onBack }: { data: Bootstrap; onBack: () => void }) 
 
   return (
     <main className="leaderboard-page">
-      <header><div><span className="eyebrow">ROLLING 30 DAYS</span><h1>{title}</h1><p>{description}</p></div><button className="back-button" onClick={onBack}>← BACK HOME</button></header>
+      <header><div><span className="eyebrow">ROLLING 30 DAYS · {languageName(language).toUpperCase()}</span><h1>{title}</h1><p>{description}</p></div><button className="back-button" onClick={onBack}>← BACK HOME</button></header>
+      <LanguageSelector language={language} onLanguage={onLanguage} compact />
       <nav className="leaderboard-tabs" aria-label="Leaderboard type">
         <button className={board === 'open' ? 'selected' : ''} aria-pressed={board === 'open'} onClick={() => setBoard('open')}>OPEN</button>
         <button className={board === 'ranked' ? 'selected' : ''} aria-pressed={board === 'ranked'} onClick={() => setBoard('ranked')}>RANKED</button>
@@ -1532,10 +1615,32 @@ function boostMinutes(value?: string | null) {
   return Math.max(1, Math.ceil((Date.parse(value) - Date.now()) / 60_000));
 }
 
-type StoredRun = { netWpm: number; accuracy: number; createdAt: string };
+type StoredRun = { netWpm: number; accuracy: number; createdAt: string; language?: TypingLanguage };
 const LOCAL_COACHING_HISTORY_KEY = 'typerival-coaching-history-v1';
+const TYPING_LANGUAGE_KEY = 'typerival-language-v1';
 
-function readLocalCoachingHistory(): CoachingRun[] {
+function readTypingLanguage(): TypingLanguage {
+  try {
+    const saved = window.localStorage.getItem(TYPING_LANGUAGE_KEY);
+    return isTypingLanguage(saved) ? saved : DEFAULT_LANGUAGE;
+  } catch {
+    return DEFAULT_LANGUAGE;
+  }
+}
+
+function rememberTypingLanguage(language: TypingLanguage) {
+  try {
+    window.localStorage.setItem(TYPING_LANGUAGE_KEY, language);
+  } catch {
+    // The selector still works for the current visit when storage is unavailable.
+  }
+}
+
+function languageName(language: TypingLanguage) {
+  return SUPPORTED_LANGUAGES.find((option) => option.code === language)?.nativeLabel ?? 'English';
+}
+
+function readStoredCoachingHistory(): CoachingRun[] {
   try {
     const saved = JSON.parse(window.localStorage.getItem(LOCAL_COACHING_HISTORY_KEY) ?? '[]') as unknown;
     if (!Array.isArray(saved)) return [];
@@ -1558,9 +1663,13 @@ function readLocalCoachingHistory(): CoachingRun[] {
   }
 }
 
+function readLocalCoachingHistory(language: TypingLanguage): CoachingRun[] {
+  return readStoredCoachingHistory().filter((run) => (getPassage(run.passageId)?.language ?? DEFAULT_LANGUAGE) === language);
+}
+
 function recordLocalCoachingRun(run: CoachingRun) {
   try {
-    const history = readLocalCoachingHistory();
+    const history = readStoredCoachingHistory();
     window.localStorage.setItem(LOCAL_COACHING_HISTORY_KEY, JSON.stringify([run, ...history].slice(0, 30)));
   } catch {
     // The current report still works when private/local storage is unavailable.
@@ -1600,21 +1709,27 @@ function rememberPassage(passageId: string) {
   }
 }
 
-function chooseFreshPassage(previousId?: string): Passage {
+function chooseFreshPassage(previousId: string | undefined, language: TypingLanguage): Passage {
+  const languagePassages = passagesForLanguage(language);
+  const languageIds = new Set(languagePassages.map((candidate) => candidate.id));
   let history = readPassageHistory();
-  let excluded = [...new Set([...history, ...(previousId ? [previousId] : [])])];
+  let excluded = [...new Set([
+    ...history.filter((id) => languageIds.has(id)),
+    ...(previousId && languageIds.has(previousId) ? [previousId] : []),
+  ])];
 
-  if (excluded.length >= PASSAGES.length) {
-    history = previousId ? [previousId] : history.slice(-1);
+  if (excluded.length >= languagePassages.length) {
+    const retainedLanguageIds = previousId && languageIds.has(previousId) ? [previousId] : excluded.slice(-1);
+    history = [...history.filter((id) => !languageIds.has(id)), ...retainedLanguageIds];
     try {
       window.localStorage.setItem(PASSAGE_HISTORY_KEY, JSON.stringify(history));
     } catch {
       // The next cycle can still avoid the immediately previous passage in memory.
     }
-    excluded = history;
+    excluded = retainedLanguageIds;
   }
 
-  return choosePassage(excluded);
+  return choosePassage(excluded, language);
 }
 
 function recordLocalRun(result: LocalRaceResult): PracticeStats {
@@ -1622,19 +1737,20 @@ function recordLocalRun(result: LocalRaceResult): PracticeStats {
     const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1_000;
     const existing = JSON.parse(window.localStorage.getItem('typerival-local-runs') ?? '[]') as StoredRun[];
     const current = existing.filter((run) => new Date(run.createdAt).getTime() >= cutoff);
-    current.push({ netWpm: result.metrics.netWpm, accuracy: result.metrics.accuracy, createdAt: new Date().toISOString() });
+    current.push({ netWpm: result.metrics.netWpm, accuracy: result.metrics.accuracy, createdAt: new Date().toISOString(), language: result.passage.language });
     window.localStorage.setItem('typerival-local-runs', JSON.stringify(current.slice(-250)));
-    return summarizeLocalRuns(current);
+    return summarizeLocalRuns(current.filter((run) => (run.language ?? DEFAULT_LANGUAGE) === result.passage.language));
   } catch {
     return emptyStats;
   }
 }
 
-function readLocalStats(): PracticeStats {
+function readLocalStats(language: TypingLanguage): PracticeStats {
   try {
     const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1_000;
     const runs = (JSON.parse(window.localStorage.getItem('typerival-local-runs') ?? '[]') as StoredRun[])
-      .filter((run) => new Date(run.createdAt).getTime() >= cutoff);
+      .filter((run) => new Date(run.createdAt).getTime() >= cutoff)
+      .filter((run) => (run.language ?? DEFAULT_LANGUAGE) === language);
     return summarizeLocalRuns(runs);
   } catch {
     return emptyStats;

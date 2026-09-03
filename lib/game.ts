@@ -1,5 +1,23 @@
+import { INTERNATIONAL_PASSAGES } from './international-passages.ts';
+
 export type GameMode = 'practice' | 'friendly' | 'ranked' | 'challenge';
 export type DeviceClass = 'mobile' | 'desktop';
+export type TypingLanguage = 'en' | 'es' | 'fr' | 'de' | 'pt' | 'it';
+
+export const SUPPORTED_LANGUAGES = [
+  { code: 'en', label: 'English', nativeLabel: 'English' },
+  { code: 'es', label: 'Spanish', nativeLabel: 'Español' },
+  { code: 'fr', label: 'French', nativeLabel: 'Français' },
+  { code: 'de', label: 'German', nativeLabel: 'Deutsch' },
+  { code: 'pt', label: 'Portuguese', nativeLabel: 'Português' },
+  { code: 'it', label: 'Italian', nativeLabel: 'Italiano' },
+] as const satisfies ReadonlyArray<{ code: TypingLanguage; label: string; nativeLabel: string }>;
+
+export const DEFAULT_LANGUAGE: TypingLanguage = 'en';
+
+export function isTypingLanguage(value: unknown): value is TypingLanguage {
+  return typeof value === 'string' && SUPPORTED_LANGUAGES.some((language) => language.code === value);
+}
 
 export type DeviceSignals = {
   mobileHint?: boolean;
@@ -17,7 +35,10 @@ export type Passage = {
   id: string;
   text: string;
   category: 'balanced';
+  language: TypingLanguage;
 };
+
+type EnglishPassage = Omit<Passage, 'language'>;
 
 export type TypingMetrics = {
   correctChars: number;
@@ -50,7 +71,7 @@ export function physicalKeyEdit(
   return null;
 }
 
-const LEGACY_PASSAGES: Passage[] = [
+const LEGACY_PASSAGE_DATA: EnglishPassage[] = [
   {
     id: 'steady-hands',
     category: 'balanced',
@@ -86,7 +107,7 @@ const LEGACY_PASSAGES: Passage[] = [
 // Active passages are intentionally separate from the launch library above. Existing
 // challenge links can still resolve legacy passages, while new runs draw only from
 // this larger rotation and will not show early testers the same launch copy again.
-export const PASSAGES: Passage[] = [
+const ENGLISH_PASSAGE_DATA: EnglishPassage[] = [
   {
     id: 'quiet-library',
     category: 'balanced',
@@ -334,20 +355,50 @@ export const PASSAGES: Passage[] = [
   },
 ];
 
-const ALL_PASSAGES = [...LEGACY_PASSAGES, ...PASSAGES];
+const ENGLISH_PASSAGES: Passage[] = ENGLISH_PASSAGE_DATA.map((passage) => ({
+  ...passage,
+  language: 'en',
+}));
+
+const LEGACY_PASSAGES: Passage[] = LEGACY_PASSAGE_DATA.map((passage) => ({
+  ...passage,
+  language: 'en',
+}));
+
+export const PASSAGES: Passage[] = [...ENGLISH_PASSAGES, ...INTERNATIONAL_PASSAGES]
+  .map((passage) => ({ ...passage, text: normalizeTypingInput(passage.text) }));
+const ALL_PASSAGES = [...LEGACY_PASSAGES, ...PASSAGES]
+  .map((passage) => ({ ...passage, text: normalizeTypingInput(passage.text) }));
 
 export function getPassage(id: string): Passage | undefined {
   return ALL_PASSAGES.find((passage) => passage.id === id);
 }
 
-export function choosePassage(excludedIds: readonly string[] = []): Passage {
+export function passagesForLanguage(language: TypingLanguage): Passage[] {
+  return PASSAGES.filter((passage) => passage.language === language);
+}
+
+export function choosePassage(
+  excludedIds: readonly string[] = [],
+  language: TypingLanguage = DEFAULT_LANGUAGE,
+): Passage {
   const excluded = new Set(excludedIds);
-  const pool = PASSAGES.filter((passage) => !excluded.has(passage.id));
-  return pool[Math.floor(Math.random() * pool.length)] ?? PASSAGES[0]!;
+  const languagePassages = passagesForLanguage(language);
+  const pool = languagePassages.filter((passage) => !excluded.has(passage.id));
+  return pool[Math.floor(Math.random() * pool.length)] ?? languagePassages[0] ?? PASSAGES[0]!;
+}
+
+export function rankedPassageForLanguage(
+  language: TypingLanguage,
+  timestamp = Date.now(),
+): Passage {
+  const pool = passagesForLanguage(language);
+  return pool[Math.floor(timestamp / 900_000) % pool.length] ?? PASSAGES[0]!;
 }
 
 export function normalizeTypingInput(input: string): string {
   return input
+    .normalize('NFC')
     .replace(/[\u2018\u2019\u02bc\uff07]/g, "'")
     .replace(/[\u201c\u201d\uff02]/g, '"')
     .replace(/[\u00a0\u202f]/g, ' ');
@@ -374,7 +425,7 @@ export function applyTypingEdit(
 
   // A race accepts one deliberate keystroke at a time. Paste, autocomplete,
   // dictation, composition replacements, and other bulk edits are ignored.
-  if (inputType !== 'insertText' && inputType !== '') {
+  if (inputType !== 'insertText' && inputType !== 'insertFromComposition' && inputType !== '') {
     return { value: current, insertedChars: 0 };
   }
 
@@ -392,11 +443,13 @@ export function calculateMetrics(
   elapsedMs: number,
   totalTypedChars = input.length,
 ): TypingMetrics {
+  const passageCharacters = Array.from(normalizeTypingInput(passage));
+  const inputCharacters = Array.from(normalizeTypingInput(input));
   let correctChars = 0;
   let incorrectChars = 0;
 
-  for (let index = 0; index < input.length; index += 1) {
-    if (input[index] === passage[index]) correctChars += 1;
+  for (let index = 0; index < inputCharacters.length; index += 1) {
+    if (inputCharacters[index] === passageCharacters[index]) correctChars += 1;
     else incorrectChars += 1;
   }
 

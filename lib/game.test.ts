@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { PASSAGES, applyTypingEdit, calculateMetrics, choosePassage, decideWinner, detectDeviceClass, getPassage, normalizeTypingInput, physicalKeyEdit, xpForMode } from './game.ts';
+import { PASSAGES, SUPPORTED_LANGUAGES, applyTypingEdit, calculateMetrics, choosePassage, decideWinner, detectDeviceClass, getPassage, normalizeTypingInput, passagesForLanguage, physicalKeyEdit, rankedPassageForLanguage, xpForMode } from './game.ts';
 import { updateGlicko2 } from './glicko2.ts';
 
 describe('TypeRival scoring', () => {
@@ -26,15 +26,31 @@ describe('TypeRival scoring', () => {
   });
 
   it('ships a large active rotation with unique passages', () => {
-    assert.ok(PASSAGES.length >= 48);
+    assert.ok(PASSAGES.length >= 98);
     assert.equal(new Set(PASSAGES.map((passage) => passage.id)).size, PASSAGES.length);
     assert.equal(new Set(PASSAGES.map((passage) => passage.text)).size, PASSAGES.length);
   });
 
+  it('ships at least ten original passages in every supported language', () => {
+    for (const language of SUPPORTED_LANGUAGES) {
+      const passages = passagesForLanguage(language.code);
+      assert.ok(passages.length >= 10, `${language.label} passage library is too small`);
+      assert.ok(passages.every((passage) => passage.language === language.code));
+    }
+  });
+
   it('selects the only passage that has not been excluded', () => {
-    const expected = PASSAGES.at(-1)!;
-    const excluded = PASSAGES.slice(0, -1).map((passage) => passage.id);
-    assert.equal(choosePassage(excluded).id, expected.id);
+    const spanish = passagesForLanguage('es');
+    const expected = spanish.at(-1)!;
+    const excluded = spanish.slice(0, -1).map((passage) => passage.id);
+    assert.equal(choosePassage(excluded, 'es').id, expected.id);
+  });
+
+  it('schedules one stable ranked passage per language and time window', () => {
+    const timestamp = Date.UTC(2026, 8, 3, 18, 0, 0);
+    assert.equal(rankedPassageForLanguage('fr', timestamp), rankedPassageForLanguage('fr', timestamp + 899_999));
+    assert.equal(rankedPassageForLanguage('fr', timestamp).language, 'fr');
+    assert.equal(rankedPassageForLanguage('es', timestamp).language, 'es');
   });
 
   it('keeps launch passages available only for existing challenge links', () => {
@@ -45,6 +61,13 @@ describe('TypeRival scoring', () => {
   it('normalizes iOS smart punctuation without changing typed content', () => {
     assert.equal(normalizeTypingInput('yesterday\u2019s trail'), "yesterday's trail");
     assert.equal(normalizeTypingInput('\u201cReady\u201d\u00a0now'), '"Ready" now');
+    assert.equal(normalizeTypingInput('cafe\u0301'), 'café');
+  });
+
+  it('accepts one composed accented character without opening bulk input', () => {
+    assert.deepEqual(applyTypingEdit('caf', 'insertText', 'e\u0301', 20), { value: 'café', insertedChars: 1 });
+    assert.deepEqual(applyTypingEdit('fran', 'insertFromComposition', 'ç', 20), { value: 'franç', insertedChars: 1 });
+    assert.equal(calculateMetrics('café', 'cafe\u0301', 60_000, 4).accuracy, 100);
   });
 
   it('builds mobile input from deliberate edits without trusting the textarea caret', () => {

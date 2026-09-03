@@ -1,6 +1,6 @@
 # TypeRival
 
-TypeRival is a competitive typing web app built for touchscreens and physical keyboards. The MVP includes Practice, asynchronous Ranked head-to-head, Friendly challenge links, a rolling 30-day leaderboard, XP, and temporary double-XP rewards.
+TypeRival is a competitive typing web app built for touchscreens and physical keyboards. The MVP includes Practice, asynchronous Ranked head-to-head, Friendly challenge links, language-aware rolling 30-day leaderboards, XP, and temporary double-XP rewards. Players can choose English, Spanish, French, German, Portuguese, or Italian passage libraries; English remains the default.
 
 ## Production architecture
 
