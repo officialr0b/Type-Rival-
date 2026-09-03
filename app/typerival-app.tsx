@@ -2,21 +2,28 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import AuthModal from './auth-modal';
+import PassageStudio from './passage-studio';
 import {
   DEFAULT_LANGUAGE,
   PASSAGES,
+  PASSAGE_CATEGORIES,
   SUPPORTED_LANGUAGES,
   applyTypingEdit,
   calculateMetrics,
   choosePassage,
   detectDeviceClass,
   getPassage,
+  isCustomPassage,
+  isPassageCategory,
   isTypingLanguage,
   passagesForLanguage,
+  passagesForSelection,
   physicalKeyEdit,
   rankedPassageForLanguage,
   type GameMode,
   type Passage,
+  type PassageCategory,
+  type PassageCategorySelection,
   type TypingLanguage,
   type TypingMetrics,
 } from '../lib/game';
@@ -40,7 +47,7 @@ import {
   type SupabasePublicConfig,
 } from '../lib/supabase-browser';
 
-type Screen = 'home' | 'setup' | 'race' | 'results' | 'leaderboard' | 'account' | 'legal' | 'feedback';
+type Screen = 'home' | 'setup' | 'race' | 'results' | 'leaderboard' | 'account' | 'legal' | 'feedback' | 'passages';
 type LeaderboardEntry = { handle: string; averageWpm: number; accuracy: number; sessions: number; rating: number };
 
 type Player = {
@@ -71,6 +78,7 @@ type Challenge = {
   durationSec: number;
   creatorMetrics: { netWpm: number; accuracy: number };
   expiresAt: string;
+  passage?: Passage;
 };
 
 type LocalRaceResult = {
@@ -185,6 +193,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
   const [screen, setScreen] = useState<Screen>('home');
   const [mode, setMode] = useState<GameMode>('practice');
   const [language, setLanguage] = useState<TypingLanguage>(DEFAULT_LANGUAGE);
+  const [category, setCategory] = useState<PassageCategorySelection>('all');
   const [durationSec, setDurationSec] = useState(45);
   const [passage, setPassage] = useState<Passage>(() => choosePassage([], DEFAULT_LANGUAGE));
   const [result, setResult] = useState<SavedResult | null>(null);
@@ -258,13 +267,14 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           return response.json() as Promise<Challenge>;
         })
         .then((loaded) => {
-          const targetPassage = getPassage(loaded.passageId);
+          const targetPassage = loaded.passage ?? getPassage(loaded.passageId);
           if (!targetPassage) throw new Error('passage unavailable');
           setChallenge(loaded);
           setPassage(targetPassage);
           setLanguage(targetPassage.language);
           languageRef.current = targetPassage.language;
           setDurationSec(loaded.durationSec);
+          setCategory(targetPassage.category);
           setMode('challenge');
           setScreen('setup');
         })
@@ -331,9 +341,10 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     languageRef.current = nextLanguage;
     setLanguage(nextLanguage);
     rememberTypingLanguage(nextLanguage);
+    setCategory('all');
     setPassage(mode === 'ranked'
       ? rankedPassageForLanguage(nextLanguage)
-      : chooseFreshPassage(undefined, nextLanguage));
+      : chooseFreshPassage(undefined, nextLanguage, 'all'));
     setLocalStats(readLocalStats(nextLanguage));
     setRunTicket(null);
     setMessage('Typing language updated. Rankings and coaching now show this language.');
@@ -354,17 +365,46 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
       return;
     }
     setMode(nextMode);
+    setCategory('all');
     setDurationSec(nextMode === 'ranked' ? 45 : durationSec);
     const rankedPassage = rankedPassageForLanguage(language);
-    setPassage(nextMode === 'ranked' ? rankedPassage : chooseFreshPassage(passage.id, language));
+    setPassage(nextMode === 'ranked' ? rankedPassage : chooseFreshPassage(passage.id, language, 'all'));
     setChallenge(null);
     setRunTicket(null);
     setScreen('setup');
   };
 
+  const chooseCategory = (nextCategory: PassageCategorySelection) => {
+    setCategory(nextCategory);
+    setPassage(chooseFreshPassage(passage.id, language, nextCategory));
+    setRunTicket(null);
+  };
+
+  const startCuratedCategory = (nextCategory: PassageCategory) => {
+    setMode('practice');
+    setCategory(nextCategory);
+    setPassage(chooseFreshPassage(undefined, language, nextCategory));
+    setChallenge(null);
+    setRunTicket(null);
+    setScreen('setup');
+  };
+
+  const startCustomPassage = (customPassage: Passage, nextMode: Extract<GameMode, 'practice' | 'friendly'>) => {
+    languageRef.current = customPassage.language;
+    setLanguage(customPassage.language);
+    rememberTypingLanguage(customPassage.language);
+    setMode(nextMode);
+    setCategory(customPassage.category);
+    setPassage(customPassage);
+    setChallenge(null);
+    setRunTicket(null);
+    setResult(null);
+    setScreen('setup');
+  };
+
   const startRace = async () => {
     setMessage('');
-    if (!bootstrap.user.signedIn || ageBand === 'under13') {
+    if (!bootstrap.user.signedIn || ageBand === 'under13' || (isCustomPassage(passage) && mode !== 'challenge')) {
       setRunTicket(null);
       setScreen('race');
       return;
@@ -374,11 +414,11 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
       const response = await authFetch('/api/runs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ mode, language, passageId: passage.id, durationSec, ageBand, deviceClass: browserDeviceClass() }),
+        body: JSON.stringify({ mode, language, category, passageId: passage.id, durationSec, ageBand, deviceClass: browserDeviceClass(), challengeCode: challenge?.code }),
       });
       const data = await response.json() as RunTicket & { error?: string };
       if (!response.ok) throw new Error(data.error ?? 'The run could not be authorized.');
-      const authorizedPassage = getPassage(data.passageId);
+      const authorizedPassage = getPassage(data.passageId) ?? (data.passageId === passage.id ? passage : undefined);
       if (!authorizedPassage) throw new Error('The authorized passage is unavailable.');
       setPassage(authorizedPassage);
       setDurationSec(data.durationSec);
@@ -406,7 +446,8 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
   };
 
   const completeRace = async (localResult: LocalRaceResult) => {
-    rememberPassage(localResult.passage.id);
+    const customPassage = isCustomPassage(localResult.passage);
+    if (!customPassage) rememberPassage(localResult.passage.id);
     const coachingHistory = bootstrap.user.signedIn && bootstrap.coachingHistory.length > 0
       ? bootstrap.coachingHistory
       : readLocalCoachingHistory(localResult.passage.language);
@@ -422,7 +463,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
         })
       : undefined;
     const enrichedResult = { ...localResult, coachingReport };
-    if (coachingReport) {
+    if (coachingReport && !customPassage) {
       recordLocalCoachingRun(createCoachingRun({
         passageId: localResult.passage.id,
         totalTypedChars: localResult.totalTypedChars,
@@ -434,15 +475,50 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     setSaving(true);
     setScreen('results');
     setResult({ ...enrichedResult, xpEarned: 0, saved: false });
-    if (!bootstrap.user.signedIn || ageBand === 'under13') {
+    if ((!bootstrap.user.signedIn || ageBand === 'under13') && !customPassage) {
       setLocalStats(recordLocalRun(localResult));
     }
     if (ageBand === 'under13') {
-      setResult({ ...enrichedResult, xpEarned: 20, saved: false });
+      setResult({ ...enrichedResult, xpEarned: customPassage ? 0 : 20, saved: false });
       setSaving(false);
       return;
     }
     try {
+      if (customPassage && localResult.mode === 'practice') {
+        setResult({ ...enrichedResult, xpEarned: 0, xpMultiplier: 1, saved: false });
+        return;
+      }
+      if (customPassage && localResult.mode === 'friendly') {
+        const challengeResponse = await authFetch('/api/challenges', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            customPassage: {
+              title: localResult.passage.title,
+              text: localResult.passage.text,
+              language: localResult.passage.language,
+              category: localResult.passage.category,
+              sourceName: localResult.passage.learning?.sourceLabel,
+              sourceUrl: localResult.passage.learning?.sourceUrl,
+            },
+            durationSec,
+            input: localResult.input,
+            elapsedMs: localResult.elapsedMs,
+            totalTypedChars: localResult.totalTypedChars,
+            ageBand,
+          }),
+        });
+        const challengeData = await challengeResponse.json() as { path?: string; error?: string };
+        if (!challengeResponse.ok || !challengeData.path) throw new Error(challengeData.error ?? 'The custom challenge could not be created.');
+        setResult({
+          ...enrichedResult,
+          xpEarned: 0,
+          xpMultiplier: 1,
+          saved: false,
+          challengeUrl: `${window.location.origin}${challengeData.path}`,
+        });
+        return;
+      }
       if (localResult.mode === 'challenge' && challenge) {
         const response = await authFetch(`/api/challenges/${challenge.code}`, {
           method: 'POST',
@@ -516,7 +592,9 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
   };
 
   const runAgain = () => {
-    if (mode !== 'challenge') setPassage((current) => chooseFreshPassage(current.id, current.language));
+    if (mode !== 'challenge' && !isCustomPassage(passage)) {
+      setPassage((current) => chooseFreshPassage(current.id, current.language, category));
+    }
     setResult(null);
     setRunTicket(null);
     setScreen('setup');
@@ -554,17 +632,23 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     setInstallPrompt(null);
   };
 
+  const openPassageStudio = () => {
+    setScreen('passages');
+    window.requestAnimationFrame(() => window.scrollTo({ top: 0 }));
+  };
+
   const goHome = () => {
     const preferredLanguage = readTypingLanguage();
     if (preferredLanguage !== language) {
       languageRef.current = preferredLanguage;
       setLanguage(preferredLanguage);
-      setPassage(chooseFreshPassage(undefined, preferredLanguage));
+      setPassage(chooseFreshPassage(undefined, preferredLanguage, 'all'));
       setLocalStats(readLocalStats(preferredLanguage));
       void refreshBootstrap(ageBandRef.current, preferredLanguage);
     }
     setScreen('home');
     setMode('practice');
+    setCategory('all');
     setChallenge(null);
     setResult(null);
     setRunTicket(null);
@@ -594,6 +678,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           language={language}
           onLanguage={changeLanguage}
           onMode={chooseMode}
+          onPassageStudio={openPassageStudio}
           onLeaderboard={() => setScreen('leaderboard')}
         />
       )}
@@ -604,7 +689,10 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           durationSec={durationSec}
           challenge={challenge}
           language={language}
+          category={category}
+          passage={passage}
           onLanguage={changeLanguage}
+          onCategory={chooseCategory}
           onDuration={setDurationSec}
           onBack={goHome}
           onStart={() => void startRace()}
@@ -640,6 +728,18 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
       )}
 
       {screen === 'leaderboard' && <Leaderboard data={bootstrap} language={language} onLanguage={changeLanguage} onBack={goHome} />}
+      {screen === 'passages' && (
+        <PassageStudio
+          signedIn={bootstrap.user.signedIn}
+          ageBand={ageBand}
+          language={language}
+          onLanguage={changeLanguage}
+          onBack={goHome}
+          onCurated={startCuratedCategory}
+          onCustom={startCustomPassage}
+          onSignIn={openAuth}
+        />
+      )}
       {screen === 'account' && bootstrap.user.signedIn && (
         <Account
           player={bootstrap.user}
@@ -717,7 +817,7 @@ function Header({ player, loading, onHome, onLeaderboard, onInstall, onAccount, 
   );
 }
 
-function Home({ bootstrap, localStats, ageBand, language, onLanguage, onMode, onLeaderboard }: {
+function Home({ bootstrap, localStats, ageBand, language, onLanguage, onMode, onLeaderboard, onPassageStudio }: {
   bootstrap: Bootstrap;
   localStats: PracticeStats;
   ageBand: AgeBand | null;
@@ -725,6 +825,7 @@ function Home({ bootstrap, localStats, ageBand, language, onLanguage, onMode, on
   onLanguage: (language: TypingLanguage) => void;
   onMode: (mode: GameMode) => void;
   onLeaderboard: () => void;
+  onPassageStudio: () => void;
 }) {
   const stats = bootstrap.user.signedIn && ageBand !== 'under13' ? bootstrap.stats : localStats;
   return (
@@ -758,6 +859,7 @@ function Home({ bootstrap, localStats, ageBand, language, onLanguage, onMode, on
           <LaunchCard number="01" title="Practice" label="LIVE" description="Build speed, accuracy, XP, and your rolling 30-day average." action="PRACTICE NOW" onClick={() => onMode('practice')} featured />
           <LaunchCard number="02" title="Ranked" label="ASYNC BETA" description="Bank one standardized run. We pair it with a rival on the same passage." action="RACE A RIVAL" onClick={() => onMode('ranked')} disabled={ageBand === 'under13'} />
           <LaunchCard number="03" title="Friendly" label="LIVE" description="Set a score, copy the challenge link, and send it to anyone." action="CREATE A CHALLENGE" onClick={() => onMode('friendly')} disabled={ageBand === 'under13'} />
+          <LaunchCard number="04" title="Passage Studio" label="NEW" description="Choose a subject, learn while you type, or bring your own passage." action="OPEN THE STUDIO" onClick={onPassageStudio} />
         </div>
       </section>
 
@@ -781,7 +883,7 @@ function LanguageSelector({ language, onLanguage, compact = false, disabled = fa
 }) {
   return (
     <label className={`language-selector ${compact ? 'compact' : ''}`}>
-      <span><small>PLAY LANGUAGE</small><b>{disabled ? 'This challenge keeps its original language.' : 'Choose the language you want to type.'}</b></span>
+      <span><small>PLAY LANGUAGE</small><b>{disabled ? 'This passage keeps its original language.' : 'Choose the language you want to type.'}</b></span>
       <select
         aria-label="Typing language"
         value={language}
@@ -811,17 +913,23 @@ function LaunchCard({ number, title, label, description, action, onClick, featur
   );
 }
 
-function Setup({ mode, durationSec, challenge, language, onLanguage, onDuration, onBack, onStart, starting }: {
+function Setup({ mode, durationSec, challenge, language, category, passage, onLanguage, onCategory, onDuration, onBack, onStart, starting }: {
   mode: GameMode;
   durationSec: number;
   challenge: Challenge | null;
   language: TypingLanguage;
+  category: PassageCategorySelection;
+  passage: Passage;
   onLanguage: (language: TypingLanguage) => void;
+  onCategory: (category: PassageCategorySelection) => void;
   onDuration: (duration: number) => void;
   onBack: () => void;
   onStart: () => void;
   starting: boolean;
 }) {
+  const custom = isCustomPassage(passage);
+  const categoryOptions = PASSAGE_CATEGORIES.filter((option) => option.code === 'all'
+    || passagesForLanguage(language).some((candidate) => candidate.category === option.code));
   const title = mode === 'ranked' ? 'Bank a ranked run.' : mode === 'friendly' ? 'Set the score to beat.' : mode === 'challenge' ? `${challenge?.creatorHandle ?? 'A rival'} called you out.` : 'Set the clock. Find your flow.';
   return (
     <main className="setup-page game-page">
@@ -841,7 +949,10 @@ function Setup({ mode, durationSec, challenge, language, onLanguage, onDuration,
         </div>
       </section>
       <section className="setup-card">
-        <LanguageSelector language={language} onLanguage={onLanguage} compact disabled={mode === 'challenge'} />
+        <LanguageSelector language={language} onLanguage={onLanguage} compact disabled={mode === 'challenge' || custom} />
+        {!custom && mode !== 'ranked' && mode !== 'challenge' && <label className="category-selector"><span>PASSAGE SUBJECT</span><select aria-label="Passage subject" value={category} onChange={(event) => { if (event.target.value === 'all' || isPassageCategory(event.target.value)) onCategory(event.target.value); }}>
+          {categoryOptions.map((option) => <option key={option.code} value={option.code}>{option.label}</option>)}
+        </select></label>}
         <label>RACE DURATION</label>
         <div className="duration-grid">
           {[30, 45, 60, 120].map((duration) => (
@@ -850,7 +961,7 @@ function Setup({ mode, durationSec, challenge, language, onLanguage, onDuration,
             </button>
           ))}
         </div>
-        <div className="setup-row"><span><small>PASSAGE</small><b>Balanced original prose · {languageName(language)}</b></span><em>READY</em></div>
+        <div className="setup-row"><span><small>PASSAGE</small><b>{custom ? passage.title : `${categoryName(category)} · ${languageName(language)}`}</b></span><em>{custom ? 'UNVERIFIED · 0 XP' : 'READY'}</em></div>
         <div className="setup-row"><span><small>INPUT</small><b>Touch or physical keyboard</b></span><em>MVP OPEN CLASS</em></div>
         <button className="primary-button setup-start" onClick={onStart} disabled={starting}>{starting ? 'AUTHORIZING RUN…' : `START ${durationSec}-SECOND RUN`}</button>
       </section>
@@ -1135,6 +1246,7 @@ function Results({ result, saving, signedIn, playerHandle, message, onRankedMatc
   onSignIn: () => void;
 }) {
   const outcome = result.challengeOutcome ?? result.friendlyMatch?.outcome ?? result.match?.outcome;
+  const custom = isCustomPassage(result.passage);
   const doubleXpUntil = result.match?.doubleXpUntil ?? result.friendlyMatch?.doubleXpUntil ?? result.doubleXpUntil;
   const headline = saving ? 'Validating your run…' : outcome === 'win' ? 'You took the win.' : outcome === 'loss' ? 'Your rival got this one.' : outcome === 'draw' ? 'Dead even.' : result.metrics.accuracy >= 97 ? 'Fast and under control.' : 'Baseline recorded.';
 
@@ -1209,8 +1321,8 @@ function Results({ result, saving, signedIn, playerHandle, message, onRankedMatc
       <section className="result-copy">
         <span className="eyebrow">{saving ? 'SERVER CHECK' : outcome ? `${outcome.toUpperCase()} · HEAD-TO-HEAD` : 'RUN COMPLETE'}</span>
         <h1>{headline}</h1>
-        <p>{result.riskStatus === 'review' ? 'This run is held for integrity review and will not reach public rankings yet.' : result.saved ? 'Your result passed validation and your progress is saved.' : signedIn ? message || 'This result stayed local.' : 'Sign in to save XP, history, and ranked results.'}</p>
-        <div className="reward-card"><span><small>SESSION REWARD</small><b>+{result.xpEarned} XP</b></span><em>{result.xpMultiplier === 2 ? '2× APPLIED' : result.saved ? 'SAVED' : 'LOCAL'}</em></div>
+        <p>{custom ? 'Custom-passage results are unverified training: they do not change XP, ratings, verified averages, or public leaderboards.' : result.riskStatus === 'review' ? 'This run is held for integrity review and will not reach public rankings yet.' : result.saved ? 'Your result passed validation and your progress is saved.' : signedIn ? message || 'This result stayed local.' : 'Sign in to save XP, history, and ranked results.'}</p>
+        <div className="reward-card"><span><small>{custom ? 'CUSTOM TRAINING' : 'SESSION REWARD'}</small><b>+{result.xpEarned} XP</b></span><em>{custom ? 'UNVERIFIED' : result.xpMultiplier === 2 ? '2× APPLIED' : result.saved ? 'SAVED' : 'LOCAL'}</em></div>
         {outcome === 'win' && isBoostActive(doubleXpUntil) && <div className="boost-earned"><b>2× XP ACTIVATED</b><span>Your next runs earn double XP for about {boostMinutes(doubleXpUntil)} minutes.</span></div>}
         {result.challengeUrl && <button className="share-button" onClick={shareChallenge}>SHARE CHALLENGE LINK ↗</button>}
         {result.mode === 'ranked' && result.match?.status === 'pending' && <div className="pending-match"><i />Result banked. We’ll pair it with the next compatible rival.</div>}
@@ -1236,11 +1348,22 @@ function Results({ result, saving, signedIn, playerHandle, message, onRankedMatc
         <ShareResultButton result={result} playerHandle={playerHandle} />
         <div className="result-actions"><button className="primary-button" onClick={onAgain}>RUN IT BACK</button><button className="secondary-button" onClick={onHome}>HOME</button></div>
       </section>
+      {(result.passage.learning || custom) && <LearningCard passage={result.passage} />}
       {result.mode === 'practice'
         ? <PracticeBreakdown result={result} />
         : <CompetitiveBreakdown result={result} playerHandle={playerHandle} />}
     </main>
   );
+}
+
+function LearningCard({ passage }: { passage: Passage }) {
+  const custom = isCustomPassage(passage);
+  return <section className="learning-card">
+    <span className="eyebrow">{custom ? 'CUSTOM PASSAGE · UNVERIFIED' : `${categoryName(passage.category).toUpperCase()} · KEEP LEARNING`}</span>
+    <h2>{passage.title ?? categoryName(passage.category)}</h2>
+    <p>{passage.learning?.summary ?? 'This passage came from a player and has not been reviewed by TypeRival for accuracy or rights.'}</p>
+    {passage.learning?.sourceUrl && <a href={passage.learning.sourceUrl} target="_blank" rel="noreferrer">OPEN SOURCE · {passage.learning.sourceLabel} ↗</a>}
+  </section>;
 }
 
 function ShareResultButton({ result, playerHandle }: { result: SavedResult; playerHandle?: string }) {
@@ -1479,7 +1602,7 @@ function Account({ player, onBack, onUpdated, onDeleted }: {
         </section>
         <section className="account-card">
           <h2>Your data</h2>
-          <p>Download a JSON copy of your profile, saved runs, Practice coaching history, friendly challenges, and challenge attempts.</p>
+          <p>Download a JSON copy of your profile, saved runs, Practice coaching history, friendly challenges, challenge attempts, feedback, and passage submissions.</p>
           <button className="secondary-button" onClick={() => void downloadExport()} disabled={busy}>DOWNLOAD MY DATA</button>
         </section>
         <section className="account-card danger-card">
@@ -1497,7 +1620,7 @@ function Legal({ onBack }: { onBack: () => void }) {
   return (
     <main className="legal-page">
       <button className="back-button" onClick={onBack}>← BACK HOME</button>
-      <span className="eyebrow">TERMS, PRIVACY & FAIR PLAY · UPDATED SEPTEMBER 1, 2026</span><h1>Fair play comes first.</h1>
+      <span className="eyebrow">TERMS, PRIVACY & FAIR PLAY · UPDATED SEPTEMBER 3, 2026</span><h1>Fair play comes first.</h1>
       <div className="legal-grid">
         <article><h2>Agreement and eligibility</h2><p>By creating an account or using online competition, you agree to these MVP terms. Players must be at least 13 to create an account. Visitors under 13 may use private, device-only practice and must not submit personal information.</p></article>
         <article><h2>Free MVP</h2><p>TypeRival currently has no entry fees, wagers, cash wallet, purchasable competitive advantage, or cash prizes. XP has no cash value and cannot be transferred, sold, or redeemed.</p></article>
@@ -1509,6 +1632,7 @@ function Legal({ onBack }: { onBack: () => void }) {
         <article><h2>Retention and control</h2><p>Saved gameplay and signed-in coaching history remain while an account is active unless operational or legal needs require a different period. Players can download their TypeRival data and permanently delete their account from the Account page. Guest and under-13 coaching history stays on the device and can be removed by clearing browser site data.</p></article>
         <article><h2>Security and availability</h2><p>TypeRival uses access controls, server validation, encrypted network connections, and rate limits, but no online service can guarantee absolute security or uninterrupted availability. The beta may change, pause, or remove features as it develops.</p></article>
         <article><h2>Challenges and conduct</h2><p>Friendly links expire after seven days and may be shared by anyone who receives them. Challenge results do not change ranked rating. Do not use handles or shared links to impersonate, harass, threaten, or expose another person’s private information.</p></article>
+        <article><h2>Passage Studio</h2><p>Custom passages are unverified training and do not affect XP, verified averages, public leaderboards, boosts, or rating. Public submissions require you to confirm that you wrote the text or have permission to submit it. Do not submit private information, unlawful material, harassment, or copyrighted text you do not have permission to use. TypeRival may review, reject, edit, or remove submissions.</p></article>
         <article><h2>Account enforcement</h2><p>Accounts or results may be limited or removed for cheating, abuse, unlawful conduct, security threats, or repeated violations. Players remain responsible for activity performed through their account and should protect their sign-in credentials.</p></article>
         <article><h2>Future prizes</h2><p>Any future sponsor-funded skill event will launch separately with official rules, eligibility and identity checks, jurisdiction controls, tax disclosures, and professional legal review. No prize event is active today.</p></article>
         <article><h2>Disclaimers</h2><p>The MVP is provided on an “as available” basis to the extent permitted by law. Rankings, XP, and availability may change during beta testing. Nothing here waives rights that cannot legally be waived.</p></article>
@@ -1640,6 +1764,10 @@ function languageName(language: TypingLanguage) {
   return SUPPORTED_LANGUAGES.find((option) => option.code === language)?.nativeLabel ?? 'English';
 }
 
+function categoryName(category: PassageCategorySelection) {
+  return PASSAGE_CATEGORIES.find((option) => option.code === category)?.label ?? 'Surprise me';
+}
+
 function readStoredCoachingHistory(): CoachingRun[] {
   try {
     const saved = JSON.parse(window.localStorage.getItem(LOCAL_COACHING_HISTORY_KEY) ?? '[]') as unknown;
@@ -1709,8 +1837,12 @@ function rememberPassage(passageId: string) {
   }
 }
 
-function chooseFreshPassage(previousId: string | undefined, language: TypingLanguage): Passage {
-  const languagePassages = passagesForLanguage(language);
+function chooseFreshPassage(
+  previousId: string | undefined,
+  language: TypingLanguage,
+  category: PassageCategorySelection = 'all',
+): Passage {
+  const languagePassages = passagesForSelection(language, category);
   const languageIds = new Set(languagePassages.map((candidate) => candidate.id));
   let history = readPassageHistory();
   let excluded = [...new Set([
@@ -1729,7 +1861,7 @@ function chooseFreshPassage(previousId: string | undefined, language: TypingLang
     excluded = retainedLanguageIds;
   }
 
-  return choosePassage(excluded, language);
+  return choosePassage(excluded, language, category);
 }
 
 function recordLocalRun(result: LocalRaceResult): PracticeStats {

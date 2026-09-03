@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { PASSAGES, SUPPORTED_LANGUAGES, applyTypingEdit, calculateMetrics, choosePassage, decideWinner, detectDeviceClass, getPassage, normalizeTypingInput, passagesForLanguage, physicalKeyEdit, rankedPassageForLanguage, xpForMode } from './game.ts';
+import { PASSAGES, PASSAGE_CATEGORIES, SUPPORTED_LANGUAGES, applyTypingEdit, calculateMetrics, choosePassage, decideWinner, detectDeviceClass, getPassage, isCustomPassage, normalizeTypingInput, passagesForLanguage, passagesForSelection, physicalKeyEdit, rankedPassageForLanguage, xpForMode } from './game.ts';
 import { updateGlicko2 } from './glicko2.ts';
 
 describe('TypeRival scoring', () => {
@@ -44,6 +44,26 @@ describe('TypeRival scoring', () => {
     const expected = spanish.at(-1)!;
     const excluded = spanish.slice(0, -1).map((passage) => passage.id);
     assert.equal(choosePassage(excluded, 'es').id, expected.id);
+  });
+
+  it('ships at least two reviewed English passages in every learning category', () => {
+    for (const category of PASSAGE_CATEGORIES) {
+      if (category.code === 'all' || category.code === 'balanced') continue;
+      const passages = passagesForSelection('en', category.code);
+      assert.ok(passages.length >= 2, `${category.label} needs more passages`);
+      assert.ok(passages.every((passage) => passage.category === category.code));
+      assert.ok(passages.every((passage) => passage.learning?.sourceUrl.startsWith('https://')));
+    }
+  });
+
+  it('keeps category selection inside the requested subject', () => {
+    assert.equal(choosePassage([], 'en', 'science').category, 'science');
+    assert.equal(choosePassage([], 'en', 'history').category, 'history');
+  });
+
+  it('recognizes custom passages without adding them to the reviewed library', () => {
+    assert.equal(isCustomPassage({ id: 'custom-one', text: 'example', category: 'science', language: 'en', sourceType: 'custom' }), true);
+    assert.equal(PASSAGES.some((passage) => passage.id.startsWith('custom-')), false);
   });
 
   it('schedules one stable ranked passage per language and time window', () => {

@@ -1,8 +1,26 @@
 import { INTERNATIONAL_PASSAGES } from './international-passages.ts';
+import { LEARNING_PASSAGES } from './learning-passages.ts';
 
 export type GameMode = 'practice' | 'friendly' | 'ranked' | 'challenge';
 export type DeviceClass = 'mobile' | 'desktop';
 export type TypingLanguage = 'en' | 'es' | 'fr' | 'de' | 'pt' | 'it';
+export type PassageCategory = 'balanced' | 'science' | 'history' | 'geography' | 'technology' | 'business' | 'sports' | 'nature' | 'health' | 'arts' | 'language';
+export type PassageCategorySelection = 'all' | PassageCategory;
+
+export const PASSAGE_CATEGORIES = [
+  { code: 'all', label: 'Surprise me' },
+  { code: 'balanced', label: 'Everyday stories' },
+  { code: 'science', label: 'Science' },
+  { code: 'history', label: 'History' },
+  { code: 'geography', label: 'Geography' },
+  { code: 'technology', label: 'Technology' },
+  { code: 'business', label: 'Business' },
+  { code: 'sports', label: 'Sports' },
+  { code: 'nature', label: 'Nature' },
+  { code: 'health', label: 'Health' },
+  { code: 'arts', label: 'Arts & culture' },
+  { code: 'language', label: 'Language' },
+] as const satisfies ReadonlyArray<{ code: PassageCategorySelection; label: string }>;
 
 export const SUPPORTED_LANGUAGES = [
   { code: 'en', label: 'English', nativeLabel: 'English' },
@@ -17,6 +35,10 @@ export const DEFAULT_LANGUAGE: TypingLanguage = 'en';
 
 export function isTypingLanguage(value: unknown): value is TypingLanguage {
   return typeof value === 'string' && SUPPORTED_LANGUAGES.some((language) => language.code === value);
+}
+
+export function isPassageCategory(value: unknown): value is PassageCategory {
+  return typeof value === 'string' && PASSAGE_CATEGORIES.some((category) => category.code === value && category.code !== 'all');
 }
 
 export type DeviceSignals = {
@@ -34,8 +56,15 @@ export type PhysicalKeyEdit = {
 export type Passage = {
   id: string;
   text: string;
-  category: 'balanced';
+  category: PassageCategory;
   language: TypingLanguage;
+  title?: string;
+  sourceType?: 'curated' | 'custom';
+  learning?: {
+    summary: string;
+    sourceLabel: string;
+    sourceUrl: string;
+  };
 };
 
 type EnglishPassage = Omit<Passage, 'language'>;
@@ -365,7 +394,7 @@ const LEGACY_PASSAGES: Passage[] = LEGACY_PASSAGE_DATA.map((passage) => ({
   language: 'en',
 }));
 
-export const PASSAGES: Passage[] = [...ENGLISH_PASSAGES, ...INTERNATIONAL_PASSAGES]
+export const PASSAGES: Passage[] = [...ENGLISH_PASSAGES, ...LEARNING_PASSAGES, ...INTERNATIONAL_PASSAGES]
   .map((passage) => ({ ...passage, text: normalizeTypingInput(passage.text) }));
 const ALL_PASSAGES = [...LEGACY_PASSAGES, ...PASSAGES]
   .map((passage) => ({ ...passage, text: normalizeTypingInput(passage.text) }));
@@ -378,14 +407,29 @@ export function passagesForLanguage(language: TypingLanguage): Passage[] {
   return PASSAGES.filter((passage) => passage.language === language);
 }
 
+export function passagesForSelection(
+  language: TypingLanguage,
+  category: PassageCategorySelection = 'all',
+): Passage[] {
+  const languagePassages = passagesForLanguage(language);
+  if (category === 'all') return languagePassages;
+  const categoryPassages = languagePassages.filter((passage) => passage.category === category);
+  return categoryPassages.length > 0 ? categoryPassages : languagePassages;
+}
+
 export function choosePassage(
   excludedIds: readonly string[] = [],
   language: TypingLanguage = DEFAULT_LANGUAGE,
+  category: PassageCategorySelection = 'all',
 ): Passage {
   const excluded = new Set(excludedIds);
-  const languagePassages = passagesForLanguage(language);
+  const languagePassages = passagesForSelection(language, category);
   const pool = languagePassages.filter((passage) => !excluded.has(passage.id));
   return pool[Math.floor(Math.random() * pool.length)] ?? languagePassages[0] ?? PASSAGES[0]!;
+}
+
+export function isCustomPassage(passage: Passage): boolean {
+  return passage.sourceType === 'custom' || passage.id.startsWith('custom-');
 }
 
 export function rankedPassageForLanguage(

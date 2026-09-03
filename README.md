@@ -1,6 +1,8 @@
 # TypeRival
 
-TypeRival is a competitive typing web app built for touchscreens and physical keyboards. The MVP includes Practice, asynchronous Ranked head-to-head, Friendly challenge links, language-aware rolling 30-day leaderboards, XP, and temporary double-XP rewards. Players can choose English, Spanish, French, German, Portuguese, or Italian passage libraries; English remains the default.
+TypeRival is a competitive typing web app built for touchscreens and physical keyboards. The MVP includes Practice, asynchronous Ranked head-to-head, Friendly challenge links, language-aware rolling 30-day leaderboards, XP, temporary double-XP rewards, and Passage Studio. Players can choose English, Spanish, French, German, Portuguese, or Italian passage libraries; English remains the default.
+
+Passage Studio adds reviewed English learning passages across ten subjects, private device-only passages, custom friend challenges, and a moderated public-submission workflow. Custom-passage results are unverified and deliberately excluded from XP, boosts, verified averages, public leaderboards, and Ranked rating. Curated learning passages use the normal verified Practice and competition rules.
 
 ## Production architecture
 
@@ -51,6 +53,7 @@ Apply database migrations before deploying an Edge Function version that depends
 3. A signed-in run can be authorized, started, submitted, and displayed.
 4. Account export, handle update, and deletion work.
 5. Vercel and Supabase logs contain no unexpected errors.
+6. Passage submissions stay pending until reviewed, and custom challenge attempts award no XP or rating.
 
 See [SUPABASE_SETUP.md](SUPABASE_SETUP.md) for platform configuration.
 
