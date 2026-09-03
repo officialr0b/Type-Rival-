@@ -1,5 +1,17 @@
 import { createClient, type User } from 'npm:@supabase/supabase-js@2.112.4';
-import { calculateMetrics, decideWinner, getPassage, PASSAGES, xpForMode, type DeviceClass, type GameMode } from '../../../lib/game.ts';
+import {
+  DEFAULT_LANGUAGE,
+  calculateMetrics,
+  decideWinner,
+  getPassage,
+  isTypingLanguage,
+  passagesForLanguage,
+  rankedPassageForLanguage,
+  xpForMode,
+  type DeviceClass,
+  type GameMode,
+  type TypingLanguage,
+} from '../../../lib/game.ts';
 import { updateGlicko2 } from '../../../lib/glicko2.ts';
 import { createCoachingRun, type CoachingRun, type TypingProfile } from '../../../lib/result-coaching.ts';
 
@@ -38,6 +50,7 @@ type RunTicketRow = {
   user_id: string;
   mode: GameMode;
   passage_id: string;
+  language: TypingLanguage;
   duration_sec: number;
   device_class: DeviceClass | 'unknown';
   issued_at: string;
@@ -148,6 +161,8 @@ async function ensurePlayer(user: User): Promise<PlayerRow> {
 
 async function bootstrap(url: URL, user: User | null) {
   const eligible = ['teen', 'adult'].includes(url.searchParams.get('ageBand') ?? '');
+  const requestedLanguage = url.searchParams.get('language');
+  const language = isTypingLanguage(requestedLanguage) ? requestedLanguage : DEFAULT_LANGUAGE;
   let player: PlayerRow | null = null;
   if (user && eligible) {
     try {
@@ -158,9 +173,9 @@ async function bootstrap(url: URL, user: User | null) {
   }
   const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000).toISOString();
   const [boardQuery, mobileRankedQuery, desktopRankedQuery] = await Promise.all([
-    admin.rpc('tr_get_leaderboard', { p_cutoff: cutoff, p_limit: 10 }),
-    admin.rpc('tr_get_ranked_leaderboard', { p_cutoff: cutoff, p_device_class: 'mobile', p_limit: 10 }),
-    admin.rpc('tr_get_ranked_leaderboard', { p_cutoff: cutoff, p_device_class: 'desktop', p_limit: 10 }),
+    admin.rpc('tr_get_leaderboard', { p_cutoff: cutoff, p_language: language, p_limit: 10 }),
+    admin.rpc('tr_get_ranked_leaderboard', { p_cutoff: cutoff, p_device_class: 'mobile', p_language: language, p_limit: 10 }),
+    admin.rpc('tr_get_ranked_leaderboard', { p_cutoff: cutoff, p_device_class: 'desktop', p_language: language, p_limit: 10 }),
   ]);
   if (boardQuery.error) throw new ServiceError('bootstrap:leaderboard', boardQuery.error);
   if (mobileRankedQuery.error) throw new ServiceError('bootstrap:ranked_mobile', mobileRankedQuery.error);
@@ -182,7 +197,7 @@ async function bootstrap(url: URL, user: User | null) {
   let latestRanked: Record<string, unknown> | null = null;
   let coachingHistory: CoachingRun[] = [];
   if (player) {
-    const statsQuery = await admin.rpc('tr_get_player_stats', { p_user_id: player.id, p_cutoff: cutoff });
+    const statsQuery = await admin.rpc('tr_get_player_stats', { p_user_id: player.id, p_cutoff: cutoff, p_language: language });
     if (statsQuery.error) throw new ServiceError('bootstrap:stats', statsQuery.error);
     const summary = Array.isArray(statsQuery.data) ? statsQuery.data[0] : statsQuery.data;
     if (summary) {
@@ -196,7 +211,8 @@ async function bootstrap(url: URL, user: User | null) {
     }
 
     const latest = await admin.from('sessions').select('match_status, outcome, rating_delta, created_at')
-      .eq('user_id', player.id).eq('mode', 'ranked').order('created_at', { ascending: false }).limit(1).maybeSingle();
+      .eq('user_id', player.id).eq('mode', 'ranked').eq('language', language)
+      .order('created_at', { ascending: false }).limit(1).maybeSingle();
     if (latest.error) throw new ServiceError('bootstrap:latest_ranked', latest.error);
     if (latest.data) {
       latestRanked = {
@@ -206,7 +222,7 @@ async function bootstrap(url: URL, user: User | null) {
         createdAt: latest.data.created_at,
       };
     }
-    coachingHistory = await loadPracticeCoachingHistory(player.id);
+    coachingHistory = await loadPracticeCoachingHistory(player.id, language);
   }
 
   return {
@@ -226,13 +242,15 @@ async function bootstrap(url: URL, user: User | null) {
     rankedLeaderboards,
     latestRanked,
     coachingHistory,
+    language,
   };
 }
 
-async function loadPracticeCoachingHistory(userId: string): Promise<CoachingRun[]> {
+async function loadPracticeCoachingHistory(userId: string, language: TypingLanguage): Promise<CoachingRun[]> {
   const selected = await admin.from('practice_coaching_runs')
     .select('session_id, passage_id, total_typed_chars, correct_chars, incorrect_chars, gross_wpm, net_wpm, accuracy, performance_score, corrections, first_try_errors, pause_count, longest_pause_ms, longest_pause_index, mistakes, insight_keys, created_at')
     .eq('user_id', userId)
+    .eq('language', language)
     .order('created_at', { ascending: false })
     .limit(12);
   if (selected.error) throw new ServiceError('bootstrap:coaching_history', selected.error);
@@ -265,6 +283,7 @@ async function issueRun(request: Request, user: User | null) {
   if (!user) return json({ error: 'Sign in to authorize a saved run.' }, 401);
   const body = await request.json() as {
     mode?: GameMode;
+    language?: TypingLanguage;
     passageId?: string;
     durationSec?: number;
     ageBand?: 'under13' | 'teen' | 'adult';
@@ -279,17 +298,24 @@ async function issueRun(request: Request, user: User | null) {
   if (body.deviceClass !== 'mobile' && body.deviceClass !== 'desktop') {
     return json({ error: 'Invalid device class.' }, 400);
   }
+  if (body.language !== undefined && !isTypingLanguage(body.language)) {
+    return json({ error: 'Invalid typing language.' }, 400);
+  }
 
   const durationSec = body.mode === 'ranked' ? RANKED_DURATION_SEC : Number(body.durationSec);
   if (![30, 45, 60, 120].includes(durationSec)) return json({ error: 'Invalid run duration.' }, 400);
   const player = await ensurePlayer(user);
   const requestedPassage = body.passageId ? getPassage(body.passageId) : undefined;
+  const language = isTypingLanguage(body.language) ? body.language : requestedPassage?.language ?? DEFAULT_LANGUAGE;
+  if (requestedPassage && requestedPassage.language !== language) {
+    return json({ error: 'The passage does not match the selected language.' }, 409);
+  }
   const passage = body.mode === 'ranked'
-    ? currentRankedPassage()
+    ? rankedPassageForLanguage(language)
     : body.mode === 'challenge'
       ? requestedPassage
       : requestedPassage
-        ? await freshPassageForPlayer(player.id, requestedPassage)
+        ? await freshPassageForPlayer(player.id, requestedPassage, language)
         : undefined;
   if (!passage) return json({ error: 'Invalid run passage.' }, 400);
 
@@ -298,6 +324,7 @@ async function issueRun(request: Request, user: User | null) {
     user_id: player.id,
     mode: body.mode,
     passage_id: passage.id,
+    language: passage.language,
     duration_sec: durationSec,
     device_class: body.deviceClass,
     expires_at: expiresAt,
@@ -306,6 +333,7 @@ async function issueRun(request: Request, user: User | null) {
   return json({
     runTicketId: inserted.data.id,
     passageId: passage.id,
+    language: passage.language,
     durationSec,
     issuedAt: inserted.data.issued_at,
     expiresAt,
@@ -339,6 +367,7 @@ async function consumeRunTicket(
   runTicketId: string,
   mode: GameMode,
   passageId: string,
+  language: TypingLanguage,
   durationSec: number,
   elapsedMs: number,
 ) {
@@ -349,7 +378,7 @@ async function consumeRunTicket(
   if (!ticket || !ticket.started_at || ticket.consumed_at || Date.parse(ticket.expires_at) <= Date.now()) {
     throw new RequestError('This run authorization is missing, expired, or already used.', 409);
   }
-  if (ticket.mode !== mode || ticket.passage_id !== passageId || ticket.duration_sec !== durationSec) {
+  if (ticket.mode !== mode || ticket.passage_id !== passageId || ticket.language !== language || ticket.duration_sec !== durationSec) {
     throw new RequestError('This result does not match its authorized run.', 409);
   }
   const serverElapsed = Date.now() - Date.parse(ticket.started_at);
@@ -412,7 +441,7 @@ async function submitSession(request: Request, user: User | null) {
     return json({ metrics, xpEarned: baseXp, xpMultiplier: 1, saved: false, riskStatus, match: null });
   }
   if (typeof body.runTicketId !== 'string') return json({ error: 'Start a new authorized run before submitting.' }, 409);
-  const ticket = await consumeRunTicket(user, body.runTicketId, mode, passage.id, durationSec, elapsedMs);
+  const ticket = await consumeRunTicket(user, body.runTicketId, mode, passage.id, passage.language, durationSec, elapsedMs);
 
   const player = await ensurePlayer(user);
   const doubleXpActive = Boolean(player.double_xp_until && Date.parse(player.double_xp_until) > Date.now());
@@ -435,6 +464,7 @@ async function submitSession(request: Request, user: User | null) {
     p_risk_status: riskStatus,
     p_match_status: matchStatus,
     p_run_ticket_id: body.runTicketId,
+    p_language: passage.language,
     p_device_class: ticket.device_class,
     p_coaching_corrections: coachingProfile.corrections,
     p_coaching_first_try_errors: coachingProfile.firstTryErrors,
@@ -611,10 +641,10 @@ async function createChallenge(request: Request, user: User | null) {
   if (typeof body.sessionId !== 'string') return json({ error: 'The source run was not saved.' }, 409);
 
   const player = await ensurePlayer(user);
-  const source = await admin.from('sessions').select('id, passage_id, duration_ms, net_wpm, accuracy, risk_status')
+  const source = await admin.from('sessions').select('id, passage_id, language, duration_ms, net_wpm, accuracy, risk_status')
     .eq('id', body.sessionId).eq('user_id', player.id).eq('mode', 'friendly').maybeSingle();
   if (source.error) throw source.error;
-  if (!source.data || source.data.risk_status !== 'clear' || source.data.passage_id !== passage.id) {
+  if (!source.data || source.data.risk_status !== 'clear' || source.data.passage_id !== passage.id || source.data.language !== passage.language) {
     return json({ error: 'The source run is not eligible for sharing.' }, 422);
   }
   const metrics = calculateMetrics(passage.text, input, elapsedMs, totalTypedChars);
@@ -630,6 +660,7 @@ async function createChallenge(request: Request, user: User | null) {
     creator_handle: player.handle,
     source_session_id: source.data.id,
     passage_id: passage.id,
+    language: passage.language,
     duration_sec: durationSec,
     creator_input: input,
     creator_elapsed_ms: Math.round(elapsedMs),
@@ -725,7 +756,7 @@ async function attemptChallenge(request: Request, code: string, user: User | nul
     return json({ outcome, challenger, creator, creatorHandle: loaded.data.creator_handle, saved: false, xpEarned: 10, xpMultiplier: 1, doubleXpUntil: null, riskStatus });
   }
   if (typeof body.runTicketId !== 'string') return json({ error: 'Start a new authorized run before submitting.' }, 409);
-  await consumeRunTicket(user, body.runTicketId, 'challenge', passage.id, durationSec, elapsedMs);
+  await consumeRunTicket(user, body.runTicketId, 'challenge', passage.id, passage.language, durationSec, elapsedMs);
   if (riskStatus === 'review') {
     return json({ outcome, challenger, creator, creatorHandle: loaded.data.creator_handle, saved: false, xpEarned: 0, xpMultiplier: 1, doubleXpUntil: null, riskStatus });
   }
@@ -875,33 +906,38 @@ async function withinRateLimit(request: Request, user: User | null, action: stri
   return result.data === true;
 }
 
-function currentRankedPassage() {
-  return PASSAGES[Math.floor(Date.now() / 900_000) % PASSAGES.length] ?? PASSAGES[0]!;
-}
-
-async function freshPassageForPlayer(playerId: string, preferred: (typeof PASSAGES)[number]) {
+async function freshPassageForPlayer(
+  playerId: string,
+  preferred: ReturnType<typeof passagesForLanguage>[number],
+  language: TypingLanguage,
+) {
+  const languagePassages = passagesForLanguage(language);
   const recent = await admin.from('sessions').select('passage_id')
     .eq('user_id', playerId)
+    .eq('language', language)
     .order('created_at', { ascending: false })
-    .limit(PASSAGES.length * 3);
+    .limit(languagePassages.length * 3);
   if (recent.error) throw new ServiceError('fresh_passage', recent.error);
 
-  const activeIds = new Set(PASSAGES.map((passage) => passage.id));
+  const activeIds = new Set(languagePassages.map((passage) => passage.id));
   const recentActiveIds = (recent.data ?? [])
     .map((session) => session.passage_id as string)
     .filter((passageId) => activeIds.has(passageId));
   const seen = new Set(recentActiveIds);
   if (activeIds.has(preferred.id) && !seen.has(preferred.id)) return preferred;
 
-  const unseen = PASSAGES.filter((passage) => !seen.has(passage.id));
+  const unseen = languagePassages.filter((passage) => !seen.has(passage.id));
   if (unseen.length > 0) return randomPassage(unseen);
 
   const mostRecentId = recentActiveIds[0];
-  return randomPassage(PASSAGES.filter((passage) => passage.id !== mostRecentId));
+  return randomPassage(languagePassages.filter((passage) => passage.id !== mostRecentId), languagePassages);
 }
 
-function randomPassage(pool: typeof PASSAGES) {
-  return pool[Math.floor(Math.random() * pool.length)] ?? PASSAGES[0]!;
+function randomPassage(
+  pool: ReturnType<typeof passagesForLanguage>,
+  fallback = pool,
+) {
+  return pool[Math.floor(Math.random() * pool.length)] ?? fallback[0]!;
 }
 
 function emptySubmittedTypingProfile(): TypingProfile {
