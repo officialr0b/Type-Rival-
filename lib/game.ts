@@ -3,6 +3,14 @@ import { LEARNING_PASSAGES } from './learning-passages.ts';
 
 export type GameMode = 'practice' | 'friendly' | 'ranked' | 'challenge';
 export type DeviceClass = 'mobile' | 'desktop';
+export type InputMethod = 'mobile_touch' | 'mobile_swipe' | 'hardware';
+export type MobileInputPreference = 'tap' | 'swipe';
+export type InputTelemetry = {
+  physicalKeyEvents: number;
+  singleInsertEvents: number;
+  bulkInsertEvents: number;
+  replacementEvents: number;
+};
 export type TypingLanguage = 'en' | 'es' | 'fr' | 'de' | 'pt' | 'it';
 export type PassageCategory = 'balanced' | 'science' | 'history' | 'geography' | 'technology' | 'business' | 'sports' | 'nature' | 'health' | 'arts' | 'language';
 export type PassageCategorySelection = 'all' | PassageCategory;
@@ -88,6 +96,24 @@ export function detectDeviceClass({
   if (/Android|iPhone|iPad|iPod|Mobile/i.test(userAgent)) return 'mobile';
   if (platform === 'MacIntel' && maxTouchPoints > 1) return 'mobile';
   return 'desktop';
+}
+
+export function emptyInputTelemetry(): InputTelemetry {
+  return {
+    physicalKeyEvents: 0,
+    singleInsertEvents: 0,
+    bulkInsertEvents: 0,
+    replacementEvents: 0,
+  };
+}
+
+export function inputMethodFromTelemetry(
+  deviceClass: DeviceClass,
+  telemetry: InputTelemetry,
+): InputMethod {
+  if (deviceClass === 'desktop' || telemetry.physicalKeyEvents > 0) return 'hardware';
+  if (telemetry.bulkInsertEvents > 0) return 'mobile_swipe';
+  return 'mobile_touch';
 }
 
 export function physicalKeyEdit(
@@ -459,6 +485,7 @@ export function applyTypingEdit(
   data: string | null,
   maxLength: number,
   allowDeletion = true,
+  maxInsertChars = 1,
 ): TypingEdit {
   if (inputType === 'deleteContentBackward' || inputType === 'deleteWordBackward') {
     if (!allowDeletion) return { value: current, insertedChars: 0 };
@@ -467,18 +494,23 @@ export function applyTypingEdit(
     return { value: characters.join(''), insertedChars: 0 };
   }
 
-  // A race accepts one deliberate keystroke at a time. Paste, autocomplete,
-  // dictation, composition replacements, and other bulk edits are ignored.
-  if (inputType !== 'insertText' && inputType !== 'insertFromComposition' && inputType !== '') {
+  const acceptedInsertTypes = maxInsertChars > 1
+    ? ['insertText', 'insertFromComposition', 'insertCompositionText', 'insertReplacementText', '']
+    : ['insertText', 'insertFromComposition', ''];
+  // Paste, drop, dictation, and history edits stay blocked. Swipe mode opens a
+  // tightly bounded path for word-sized text emitted by a mobile keyboard.
+  if (!acceptedInsertTypes.includes(inputType)) {
     return { value: current, insertedChars: 0 };
   }
 
   const characters = Array.from(normalizeTypingInput(data ?? '').replace(/[\r\n]/g, ''));
-  if (characters.length !== 1 || Array.from(current).length >= maxLength) {
+  const remaining = Math.max(0, maxLength - Array.from(current).length);
+  if (characters.length < 1 || characters.length > maxInsertChars || remaining < 1) {
     return { value: current, insertedChars: 0 };
   }
 
-  return { value: current + characters[0], insertedChars: 1 };
+  const inserted = characters.slice(0, remaining);
+  return { value: current + inserted.join(''), insertedChars: inserted.length };
 }
 
 export function calculateMetrics(

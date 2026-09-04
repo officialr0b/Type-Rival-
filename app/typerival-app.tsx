@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import AuthModal from './auth-modal';
+import LiveFriendly from './live-friendly';
 import PassageStudio from './passage-studio';
 import {
   DEFAULT_LANGUAGE,
@@ -12,7 +13,9 @@ import {
   calculateMetrics,
   choosePassage,
   detectDeviceClass,
+  emptyInputTelemetry,
   getPassage,
+  inputMethodFromTelemetry,
   isCustomPassage,
   isPassageCategory,
   isTypingLanguage,
@@ -21,6 +24,9 @@ import {
   physicalKeyEdit,
   rankedPassageForLanguage,
   type GameMode,
+  type InputMethod,
+  type InputTelemetry,
+  type MobileInputPreference,
   type Passage,
   type PassageCategory,
   type PassageCategorySelection,
@@ -54,7 +60,7 @@ import {
   type Progression,
 } from '../lib/progression';
 
-type Screen = 'home' | 'setup' | 'race' | 'results' | 'leaderboard' | 'account' | 'legal' | 'feedback' | 'passages';
+type Screen = 'home' | 'setup' | 'race' | 'results' | 'leaderboard' | 'account' | 'legal' | 'feedback' | 'passages' | 'live';
 type LeaderboardEntry = { handle: string; averageWpm: number; accuracy: number; sessions: number; rating: number };
 
 type Player = {
@@ -73,7 +79,7 @@ type Bootstrap = {
   user: Player;
   stats: { sessions: number; averageWpm: number; bestWpm: number; accuracy: number; activeDays: number };
   leaderboard: LeaderboardEntry[];
-  rankedLeaderboards: { mobile: LeaderboardEntry[]; desktop: LeaderboardEntry[] };
+  rankedLeaderboards: Record<InputMethod, LeaderboardEntry[]>;
   latestRanked: { matchStatus: string; outcome?: string; ratingDelta?: number } | null;
   coachingHistory: CoachingRun[];
   progression: Progression | null;
@@ -97,6 +103,8 @@ type LocalRaceResult = {
   totalTypedChars: number;
   metrics: TypingMetrics;
   typingProfile: TypingProfile;
+  inputMethod: InputMethod;
+  inputTelemetry: InputTelemetry;
 };
 
 type RunTicket = {
@@ -179,6 +187,7 @@ type SessionApiResult = {
   match?: SavedResult['match'];
   missionBonusXp?: number;
   progression?: Progression | null;
+  inputMethod?: InputMethod;
 };
 
 type DeferredInstallPrompt = Event & {
@@ -194,7 +203,7 @@ const defaultBootstrap: Bootstrap = {
   user: { signedIn: false },
   stats: emptyStats,
   leaderboard: [],
-  rankedLeaderboards: { mobile: [], desktop: [] },
+  rankedLeaderboards: { mobile_touch: [], mobile_swipe: [], hardware: [] },
   latestRanked: null,
   coachingHistory: [],
   progression: null,
@@ -210,6 +219,8 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
   const [language, setLanguage] = useState<TypingLanguage>(DEFAULT_LANGUAGE);
   const [category, setCategory] = useState<PassageCategorySelection>('all');
   const [durationSec, setDurationSec] = useState(45);
+  const [inputPreference, setInputPreference] = useState<MobileInputPreference>('tap');
+  const [liveRoomId, setLiveRoomId] = useState('');
   const [passage, setPassage] = useState<Passage>(() => choosePassage([], DEFAULT_LANGUAGE));
   const [result, setResult] = useState<SavedResult | null>(null);
   const [bootstrap, setBootstrap] = useState<Bootstrap>(defaultBootstrap);
@@ -237,7 +248,20 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
       if (currentAge) query.set('ageBand', currentAge);
       const response = await authFetch(`/api/bootstrap?${query.toString()}`, { cache: 'no-store' });
       if (!response.ok) throw new Error('profile unavailable');
-      setBootstrap(await response.json() as Bootstrap);
+      const loaded = await response.json() as Bootstrap & {
+        rankedLeaderboards?: Partial<Record<InputMethod, LeaderboardEntry[]>> & {
+          mobile?: LeaderboardEntry[];
+          desktop?: LeaderboardEntry[];
+        };
+      };
+      setBootstrap({
+        ...loaded,
+        rankedLeaderboards: {
+          mobile_touch: loaded.rankedLeaderboards?.mobile_touch ?? loaded.rankedLeaderboards?.mobile ?? [],
+          mobile_swipe: loaded.rankedLeaderboards?.mobile_swipe ?? [],
+          hardware: loaded.rankedLeaderboards?.hardware ?? loaded.rankedLeaderboards?.desktop ?? [],
+        },
+      });
     } catch {
       setMessage('Online progress is temporarily unavailable. Local practice still works.');
     } finally {
@@ -295,6 +319,13 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
         })
         .catch(() => setMessage('That challenge is unavailable or has expired.'));
     }
+    const requestedLiveRoom = params.get('live');
+    const liveTimer = window.setTimeout(() => {
+      if (requestedLiveRoom) {
+        setLiveRoomId(requestedLiveRoom);
+        setScreen('live');
+      }
+    }, 0);
 
     const installHandler = (event: Event) => {
       event.preventDefault();
@@ -320,6 +351,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     return () => {
       window.clearTimeout(initializeTimer);
       window.clearTimeout(authTimer);
+      window.clearTimeout(liveTimer);
       window.removeEventListener('beforeinstallprompt', installHandler);
       subscription?.unsubscribe();
     };
@@ -387,6 +419,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     setChallenge(null);
     setRunTicket(null);
     setScreen('setup');
+    window.requestAnimationFrame(() => window.scrollTo({ top: 0 }));
   };
 
   const chooseCategory = (nextCategory: PassageCategorySelection) => {
@@ -575,6 +608,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
             runTicketId: runTicket?.runTicketId,
             ageBand,
             typingProfile: localResult.typingProfile,
+            inputTelemetry: localResult.inputTelemetry,
             coachingInsightKeys: coachingReport?.insightKeys,
           }),
         });
@@ -654,6 +688,21 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     window.requestAnimationFrame(() => window.scrollTo({ top: 0 }));
   };
 
+  const openLiveFriendly = () => {
+    if (ageBand === 'under13') {
+      setMessage('Live Friendly is available for players 13 and older. Private practice is ready now.');
+      return;
+    }
+    if (!bootstrap.user.signedIn) {
+      setMessage('Sign in to create or join a live room.');
+      openAuth();
+      return;
+    }
+    setLiveRoomId('');
+    setScreen('live');
+    window.requestAnimationFrame(() => window.scrollTo({ top: 0 }));
+  };
+
   const goHome = () => {
     const preferredLanguage = readTypingLanguage();
     if (preferredLanguage !== language) {
@@ -670,6 +719,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     setResult(null);
     setRunTicket(null);
     window.history.replaceState({}, '', '/');
+    window.requestAnimationFrame(() => window.scrollTo({ top: 0 }));
   };
 
   return (
@@ -696,6 +746,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           language={language}
           onLanguage={changeLanguage}
           onMode={chooseMode}
+          onLive={openLiveFriendly}
           onPassageStudio={openPassageStudio}
           onLeaderboard={() => setScreen('leaderboard')}
           onSignIn={openAuth}
@@ -710,9 +761,11 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           language={language}
           category={category}
           passage={passage}
+          inputPreference={inputPreference}
           onLanguage={changeLanguage}
           onCategory={chooseCategory}
           onDuration={setDurationSec}
+          onInputPreference={setInputPreference}
           onBack={goHome}
           onStart={() => void startRace()}
           starting={starting}
@@ -725,6 +778,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           mode={mode}
           durationSec={durationSec}
           passage={passage}
+          inputPreference={inputPreference}
           onArm={armRun}
           onCancel={() => setScreen('setup')}
           onComplete={completeRace}
@@ -747,6 +801,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
       )}
 
       {screen === 'leaderboard' && <Leaderboard data={bootstrap} language={language} onLanguage={changeLanguage} onBack={goHome} />}
+      {screen === 'live' && <LiveFriendly initialRoomId={liveRoomId} inputPreference={inputPreference} ageBand={ageBand} signedIn={bootstrap.user.signedIn} onInputPreference={setInputPreference} onBack={goHome} onSignIn={openAuth} />}
       {screen === 'passages' && (
         <PassageStudio
           signedIn={bootstrap.user.signedIn}
@@ -842,13 +897,14 @@ function Header({ player, progression, loading, onHome, onLeaderboard, onInstall
   );
 }
 
-function Home({ bootstrap, localStats, ageBand, language, onLanguage, onMode, onLeaderboard, onPassageStudio, onSignIn }: {
+function Home({ bootstrap, localStats, ageBand, language, onLanguage, onMode, onLive, onLeaderboard, onPassageStudio, onSignIn }: {
   bootstrap: Bootstrap;
   localStats: PracticeStats;
   ageBand: AgeBand | null;
   language: TypingLanguage;
   onLanguage: (language: TypingLanguage) => void;
   onMode: (mode: GameMode) => void;
+  onLive: () => void;
   onLeaderboard: () => void;
   onPassageStudio: () => void;
   onSignIn: () => void;
@@ -890,8 +946,9 @@ function Home({ bootstrap, localStats, ageBand, language, onLanguage, onMode, on
         <div className="launch-mode-grid">
           <LaunchCard number="01" title="Practice" label="LIVE" description="Build speed, accuracy, XP, and your rolling 30-day average." action="PRACTICE NOW" onClick={() => onMode('practice')} featured />
           <LaunchCard number="02" title="Ranked" label="ASYNC BETA" description="Bank one standardized run. We pair it with a rival on the same passage." action="RACE A RIVAL" onClick={() => onMode('ranked')} disabled={ageBand === 'under13'} />
-          <LaunchCard number="03" title="Friendly" label="LIVE" description="Set a score, copy the challenge link, and send it to anyone." action="CREATE A CHALLENGE" onClick={() => onMode('friendly')} disabled={ageBand === 'under13'} />
-          <LaunchCard number="04" title="Passage Studio" label="NEW" description="Choose a subject, learn while you type, or bring your own passage." action="OPEN THE STUDIO" onClick={onPassageStudio} />
+          <LaunchCard number="03" title="Friendly" label="ASYNC" description="Set a score, copy the challenge link, and send it to anyone." action="CREATE A CHALLENGE" onClick={() => onMode('friendly')} disabled={ageBand === 'under13'} />
+          <LaunchCard number="04" title="Live Friendly" label="COLYSEUS ALPHA" description="Meet a rival in a private room and race on the same 45-second clock." action="OPEN LIVE ARENA" onClick={onLive} disabled={ageBand === 'under13'} />
+          <LaunchCard number="05" title="Passage Studio" label="NEW" description="Choose a subject, learn while you type, or bring your own passage." action="OPEN THE STUDIO" onClick={onPassageStudio} />
         </div>
       </section>
 
@@ -1026,16 +1083,18 @@ function LaunchCard({ number, title, label, description, action, onClick, featur
   );
 }
 
-function Setup({ mode, durationSec, challenge, language, category, passage, onLanguage, onCategory, onDuration, onBack, onStart, starting }: {
+function Setup({ mode, durationSec, challenge, language, category, passage, inputPreference, onLanguage, onCategory, onDuration, onInputPreference, onBack, onStart, starting }: {
   mode: GameMode;
   durationSec: number;
   challenge: Challenge | null;
   language: TypingLanguage;
   category: PassageCategorySelection;
   passage: Passage;
+  inputPreference: MobileInputPreference;
   onLanguage: (language: TypingLanguage) => void;
   onCategory: (category: PassageCategorySelection) => void;
   onDuration: (duration: number) => void;
+  onInputPreference: (preference: MobileInputPreference) => void;
   onBack: () => void;
   onStart: () => void;
   starting: boolean;
@@ -1054,7 +1113,9 @@ function Setup({ mode, durationSec, challenge, language, category, passage, onLa
           ? 'Your server-verified 45-second result will be paired with another signed-in player on the same passage.'
           : mode === 'challenge'
             ? 'Same passage. Same clock. Accuracy wins the tie.'
-            : 'Autocorrect, autocomplete, spellcheck, and paste are disabled where your browser allows it.'}</p>
+            : inputPreference === 'swipe'
+              ? 'Swipe input accepts word gestures. Paste and drop stay blocked; your keyboard may show suggestions while swipe mode is active.'
+              : 'Autocorrect, autocomplete, spellcheck, and paste are disabled where your browser allows it.'}</p>
         <div className="setup-rules">
           <span><b>3</b><small>COUNTDOWN</small></span>
           <span><b>90%</b><small>ACCURACY GATE</small></span>
@@ -1075,7 +1136,14 @@ function Setup({ mode, durationSec, challenge, language, category, passage, onLa
           ))}
         </div>
         <div className="setup-row"><span><small>PASSAGE</small><b>{custom ? passage.title : `${categoryName(category)} · ${languageName(language)}`}</b></span><em>{custom ? 'UNVERIFIED · 0 XP' : 'READY'}</em></div>
-        <div className="setup-row"><span><small>INPUT</small><b>Touch or physical keyboard</b></span><em>MVP OPEN CLASS</em></div>
+        <div className="input-method-control">
+          <span><small>INPUT STYLE</small><b>How do you want to type?</b></span>
+          <div role="group" aria-label="Mobile input method">
+            <button className={inputPreference === 'tap' ? 'selected' : ''} aria-pressed={inputPreference === 'tap'} onClick={() => onInputPreference('tap')}><b>TAP</b><small>ONE KEY AT A TIME</small></button>
+            <button className={inputPreference === 'swipe' ? 'selected' : ''} aria-pressed={inputPreference === 'swipe'} onClick={() => onInputPreference('swipe')}><b>SWIPE</b><small>WORD GESTURES</small></button>
+          </div>
+          <p>Connected keyboards are detected automatically. Ranked results are placed on the board that matches the input observed during the run.</p>
+        </div>
         <button className="primary-button setup-start" onClick={onStart} disabled={starting}>{starting ? 'AUTHORIZING RUN…' : `START ${durationSec}-SECOND RUN`}</button>
       </section>
     </main>
@@ -1089,10 +1157,11 @@ function resetRaceInputField(field: HTMLTextAreaElement) {
   field.setSelectionRange(RACE_INPUT_SENTINEL.length, RACE_INPUT_SENTINEL.length);
 }
 
-function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
+function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel, onComplete }: {
   mode: GameMode;
   durationSec: number;
   passage: Passage;
+  inputPreference: MobileInputPreference;
   onArm: () => Promise<void>;
   onCancel: () => void;
   onComplete: (result: LocalRaceResult) => void;
@@ -1114,6 +1183,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
   const currentTotal = useRef(0);
   const lastPhysicalEdit = useRef<{ inputType: string; data: string | null; at: number } | null>(null);
   const typingProfile = useRef<TypingProfile>(emptyTypingProfile());
+  const inputTelemetry = useRef<InputTelemetry>(emptyInputTelemetry());
   const lastInsertAt = useRef(0);
 
   const elapsedMs = durationSec * 1_000 - remainingMs;
@@ -1156,6 +1226,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
   const finish = useCallback((finalInput: string, finalTotal: number, finalElapsed: number) => {
     if (finished.current) return;
     finished.current = true;
+    const telemetry = { ...inputTelemetry.current };
     onComplete({
       passage,
       mode,
@@ -1164,33 +1235,44 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
       elapsedMs: Math.max(1_000, finalElapsed),
       metrics: calculateMetrics(passage.text, finalInput, finalElapsed, finalTotal),
       typingProfile: { ...typingProfile.current, mistakes: [...typingProfile.current.mistakes] },
+      inputMethod: inputMethodFromTelemetry(browserDeviceClass(), telemetry),
+      inputTelemetry: telemetry,
     });
   }, [mode, onComplete, passage]);
 
-  const applyRaceEdit = useCallback((inputType: string, data: string | null) => {
+  const applyRaceEdit = useCallback((inputType: string, data: string | null, source: 'physical' | 'virtual') => {
     if (!activeRef.current || finished.current) return;
 
     const previousInput = currentInput.current;
+    const allowSwipeChunk = source === 'virtual' && inputPreference === 'swipe' && browserDeviceClass() === 'mobile';
     const edit = applyTypingEdit(
       previousInput,
       inputType,
       data,
       passage.text.length + 20,
       true,
+      allowSwipeChunk ? 48 : 1,
     );
     if (edit.value === previousInput) return;
 
-    if (edit.insertedChars === 1) {
+    if (source === 'physical') inputTelemetry.current.physicalKeyEvents += 1;
+    if (edit.insertedChars === 1) inputTelemetry.current.singleInsertEvents += 1;
+    if (edit.insertedChars > 1) inputTelemetry.current.bulkInsertEvents += 1;
+    if (inputType === 'insertReplacementText') inputTelemetry.current.replacementEvents += 1;
+
+    if (edit.insertedChars > 0) {
       const now = performance.now();
       const index = Array.from(previousInput).length;
-      const actual = Array.from(edit.value).at(-1) ?? '';
-      const expected = passageCharacters[index] ?? '';
-      if (actual !== expected) {
-        typingProfile.current.firstTryErrors += 1;
-        if (typingProfile.current.mistakes.length < 24) {
-          typingProfile.current.mistakes.push({ expected, actual, index });
+      const inserted = Array.from(edit.value).slice(index);
+      inserted.forEach((actual, offset) => {
+        const expected = passageCharacters[index + offset] ?? '';
+        if (actual !== expected) {
+          typingProfile.current.firstTryErrors += 1;
+          if (typingProfile.current.mistakes.length < 24) {
+            typingProfile.current.mistakes.push({ expected, actual, index: index + offset });
+          }
         }
-      }
+      });
       if (lastInsertAt.current > 0) {
         const pauseMs = now - lastInsertAt.current;
         if (pauseMs >= 900) typingProfile.current.pauseCount += 1;
@@ -1212,7 +1294,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
     if (edit.value === passage.text) {
       finish(edit.value, nextTotal, Date.now() - startedAt.current);
     }
-  }, [finish, passage.text, passageCharacters]);
+  }, [finish, inputPreference, passage.text, passageCharacters]);
 
   useEffect(() => {
     if (!armed || countdown <= 0) return;
@@ -1222,6 +1304,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
         currentInput.current = '';
         currentTotal.current = 0;
         typingProfile.current = emptyTypingProfile();
+        inputTelemetry.current = emptyInputTelemetry();
         lastInsertAt.current = 0;
         setInput('');
         setTotalTypedChars(0);
@@ -1262,7 +1345,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
         lastPhysicalEdit.current = null;
         return;
       }
-      applyRaceEdit(event.inputType, event.data);
+      applyRaceEdit(event.inputType, event.data, 'virtual');
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1271,7 +1354,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
       event.preventDefault();
       resetRaceInputField(field);
       lastPhysicalEdit.current = { ...edit, at: performance.now() };
-      applyRaceEdit(edit.inputType, edit.data);
+      applyRaceEdit(edit.inputType, edit.data, 'physical');
     };
 
     field.addEventListener('beforeinput', handleBeforeInput);
@@ -1297,7 +1380,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
 
   return (
     <main className="race-page game-page" onClick={() => inputRef.current?.focus()}>
-      <header className="race-top"><button onClick={(event) => { event.stopPropagation(); onCancel(); }}>✕ EXIT</button><span>{mode.toUpperCase()} · {languageName(passage.language).toUpperCase()}</span><small>BACKSPACE ENABLED · TAP PASSAGE TO REFOCUS</small></header>
+      <header className="race-top"><button onClick={(event) => { event.stopPropagation(); onCancel(); }}>✕ EXIT</button><span>{mode.toUpperCase()} · {languageName(passage.language).toUpperCase()}</span><small>BACKSPACE ENABLED · {inputPreference === 'swipe' ? 'SWIPE INPUT READY' : 'TAP INPUT READY'}</small></header>
       <section className="race-hud">
         <RaceMetric value={Math.round(metrics.netWpm)} label="NET WPM" accent />
         <RaceMetric value={`${metrics.accuracy.toFixed(1)}%`} label="ACCURACY" />
@@ -1332,7 +1415,7 @@ function RaceView({ mode, durationSec, passage, onArm, onCancel, onComplete }: {
         onDrop={(event) => event.preventDefault()}
         onBlur={() => { if (active && !finished.current) setTimeout(() => inputRef.current?.focus(), 100); }}
         autoComplete="off"
-        autoCorrect="off"
+        autoCorrect={inputPreference === 'swipe' ? 'on' : 'off'}
         autoCapitalize="none"
         inputMode="text"
         spellCheck={false}
@@ -1448,7 +1531,7 @@ function Results({ result, saving, signedIn, playerHandle, message, onRankedMatc
       </section>
       <section className="result-performance">
         <section className="result-card">
-          <div className="hero-result"><b>{Math.round(result.metrics.netWpm)}</b><small>NET WPM</small></div>
+          <div className="hero-result"><span>{inputMethodLabel(result.inputMethod)}</span><b>{Math.round(result.metrics.netWpm)}</b><small>NET WPM</small></div>
           <div className="result-grid">
             <RaceMetric value={`${result.metrics.accuracy.toFixed(1)}%`} label="ACCURACY" accent={result.metrics.accuracy >= 97} />
             <RaceMetric value={Math.round(result.metrics.grossWpm)} label="GROSS WPM" />
@@ -1645,12 +1728,12 @@ function Leaderboard({ data, language, onLanguage, onBack }: {
   onBack: () => void;
 }) {
   const [board, setBoard] = useState<'open' | 'ranked'>('open');
-  const [rankedDevice, setRankedDevice] = useState<'mobile' | 'desktop'>('mobile');
-  const entries = board === 'open' ? data.leaderboard : data.rankedLeaderboards[rankedDevice];
+  const [rankedInput, setRankedInput] = useState<InputMethod>('mobile_touch');
+  const entries = board === 'open' ? data.leaderboard : data.rankedLeaderboards[rankedInput] ?? [];
   const title = board === 'open' ? 'Open leaderboard' : 'Ranked leaderboard';
   const description = board === 'open'
     ? 'You can hit the leaderboard as soon as your first run is complete. Clear, signed-in results count toward your rolling 30-day averages.'
-    : '45-second ranked runs only. Mobile and tablet players compete together, while desktop players have their own board.';
+    : '45-second ranked runs only. Tap, swipe, and hardware input each have a fair lane.';
 
   return (
     <main className="leaderboard-page">
@@ -1661,13 +1744,14 @@ function Leaderboard({ data, language, onLanguage, onBack }: {
         <button className={board === 'ranked' ? 'selected' : ''} aria-pressed={board === 'ranked'} onClick={() => setBoard('ranked')}>RANKED</button>
       </nav>
       {board === 'ranked' && <>
-        <nav className="leaderboard-subtabs" aria-label="Ranked device class">
-          <button className={rankedDevice === 'mobile' ? 'selected' : ''} aria-pressed={rankedDevice === 'mobile'} onClick={() => setRankedDevice('mobile')}>MOBILE + TABLET</button>
-          <button className={rankedDevice === 'desktop' ? 'selected' : ''} aria-pressed={rankedDevice === 'desktop'} onClick={() => setRankedDevice('desktop')}>DESKTOP</button>
+        <nav className="leaderboard-subtabs" aria-label="Ranked input method">
+          <button className={rankedInput === 'mobile_touch' ? 'selected' : ''} aria-pressed={rankedInput === 'mobile_touch'} onClick={() => setRankedInput('mobile_touch')}>MOBILE TOUCH</button>
+          <button className={rankedInput === 'mobile_swipe' ? 'selected' : ''} aria-pressed={rankedInput === 'mobile_swipe'} onClick={() => setRankedInput('mobile_swipe')}>MOBILE SWIPE</button>
+          <button className={rankedInput === 'hardware' ? 'selected' : ''} aria-pressed={rankedInput === 'hardware'} onClick={() => setRankedInput('hardware')}>DESKTOP / HARDWARE</button>
         </nav>
-        <p className="leaderboard-note">Device-class tracking starts with runs completed after this update. Rating remains unified during the async Ranked beta.</p>
+        <p className="leaderboard-note">TypeRival classifies the input actually observed during each run. Connected iPad and tablet keyboards join the hardware lane. Rating remains unified during the async Ranked beta.</p>
       </>}
-      <LeaderboardTable entries={entries} emptyLabel={board === 'open' ? 'Complete a signed-in run to claim the first spot.' : `Complete a ${rankedDevice === 'mobile' ? 'mobile or tablet' : 'desktop'} Ranked run to claim the first spot.`} />
+      <LeaderboardTable entries={entries} emptyLabel={board === 'open' ? 'Complete a signed-in run to claim the first spot.' : `Complete a ${inputMethodLabel(rankedInput).toLowerCase()} Ranked run to claim the first spot.`} />
     </main>
   );
 }
@@ -1932,6 +2016,12 @@ function languageName(language: TypingLanguage) {
 
 function categoryName(category: PassageCategorySelection) {
   return PASSAGE_CATEGORIES.find((option) => option.code === category)?.label ?? 'Surprise me';
+}
+
+function inputMethodLabel(inputMethod: InputMethod) {
+  if (inputMethod === 'mobile_swipe') return 'Mobile swipe';
+  if (inputMethod === 'mobile_touch') return 'Mobile touch';
+  return 'Desktop / hardware';
 }
 
 function readStoredCoachingHistory(): CoachingRun[] {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { PASSAGES, PASSAGE_CATEGORIES, SUPPORTED_LANGUAGES, applyTypingEdit, calculateMetrics, choosePassage, decideWinner, detectDeviceClass, getPassage, isCustomPassage, normalizeTypingInput, passagesForLanguage, passagesForSelection, physicalKeyEdit, rankedPassageForLanguage, xpForMode } from './game.ts';
+import { PASSAGES, PASSAGE_CATEGORIES, SUPPORTED_LANGUAGES, applyTypingEdit, calculateMetrics, choosePassage, decideWinner, detectDeviceClass, emptyInputTelemetry, getPassage, inputMethodFromTelemetry, isCustomPassage, normalizeTypingInput, passagesForLanguage, passagesForSelection, physicalKeyEdit, rankedPassageForLanguage, xpForMode } from './game.ts';
 import { updateGlicko2 } from './glicko2.ts';
 
 describe('TypeRival scoring', () => {
@@ -97,6 +97,20 @@ describe('TypeRival scoring', () => {
     }
     assert.equal(value, 'The coast');
     assert.deepEqual(applyTypingEdit(value, 'deleteContentBackward', null, 20), { value: 'The coas', insertedChars: 0 });
+  });
+
+  it('accepts a bounded word-sized insert only when swipe input is enabled', () => {
+    assert.deepEqual(applyTypingEdit('The ', 'insertText', 'coast', 20), { value: 'The ', insertedChars: 0 });
+    assert.deepEqual(applyTypingEdit('The ', 'insertText', 'coast', 20, true, 48), { value: 'The coast', insertedChars: 5 });
+    assert.deepEqual(applyTypingEdit('The ', 'insertFromPaste', 'coast', 20, true, 48), { value: 'The ', insertedChars: 0 });
+    assert.deepEqual(applyTypingEdit('The ', 'insertText', 'coast', 7, true, 48), { value: 'The coa', insertedChars: 3 });
+  });
+
+  it('classifies ranked input from observed events instead of a claimed label', () => {
+    assert.equal(inputMethodFromTelemetry('desktop', emptyInputTelemetry()), 'hardware');
+    assert.equal(inputMethodFromTelemetry('mobile', { ...emptyInputTelemetry(), singleInsertEvents: 20 }), 'mobile_touch');
+    assert.equal(inputMethodFromTelemetry('mobile', { ...emptyInputTelemetry(), bulkInsertEvents: 2 }), 'mobile_swipe');
+    assert.equal(inputMethodFromTelemetry('mobile', { ...emptyInputTelemetry(), physicalKeyEvents: 1, bulkInsertEvents: 2 }), 'hardware');
   });
 
   it('allows corrections when a mode enables backspace', () => {
