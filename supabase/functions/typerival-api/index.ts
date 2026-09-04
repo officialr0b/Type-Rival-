@@ -370,6 +370,19 @@ async function loadProgression(player: PlayerRow, claimCompleted: boolean): Prom
   };
 }
 
+async function loadProgressionAfterRun(player: PlayerRow): Promise<Progression | null> {
+  try {
+    return await loadProgression(player, true);
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: 'progression_enrichment_failed',
+      stage: error instanceof ServiceError ? error.stage : 'progression:unknown',
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    return null;
+  }
+}
+
 async function loadPracticeCoachingHistory(userId: string, language: TypingLanguage): Promise<CoachingRun[]> {
   const selected = await admin.from('practice_coaching_runs')
     .select('session_id, passage_id, total_typed_chars, correct_chars, incorrect_chars, gross_wpm, net_wpm, accuracy, performance_score, corrections, first_try_errors, pause_count, longest_pause_ms, longest_pause_index, mistakes, insight_keys, created_at')
@@ -620,7 +633,7 @@ async function submitSession(request: Request, user: User | null) {
   const match = mode === 'ranked' && riskStatus === 'clear'
     ? await tryRankedMatch(session.id, player, passage.id, ticket.device_class)
     : null;
-  const progression = await loadProgression(player, riskStatus === 'clear');
+  const progression = riskStatus === 'clear' ? await loadProgressionAfterRun(player) : null;
 
   return json({
     metrics,
@@ -632,7 +645,7 @@ async function submitSession(request: Request, user: User | null) {
     sessionId: session.id,
     match,
     progression,
-    missionBonusXp: progression.missionBonusXp,
+    missionBonusXp: progression?.missionBonusXp ?? 0,
   });
 }
 
@@ -993,7 +1006,7 @@ async function attemptChallenge(request: Request, code: string, user: User | nul
     p_creator_user_id: loaded.data.creator_user_id,
   });
   if (recorded.error) throw recorded.error;
-  const progression = await loadProgression(player, true);
+  const progression = await loadProgressionAfterRun(player);
   return json({
     outcome,
     challenger,
@@ -1005,7 +1018,7 @@ async function attemptChallenge(request: Request, code: string, user: User | nul
     riskStatus,
     doubleXpUntil: outcome === 'win' ? boostUntil : player.double_xp_until,
     progression,
-    missionBonusXp: progression.missionBonusXp,
+    missionBonusXp: progression?.missionBonusXp ?? 0,
   });
 }
 
