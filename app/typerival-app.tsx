@@ -46,6 +46,13 @@ import {
   getSupabaseBrowserClient,
   type SupabasePublicConfig,
 } from '../lib/supabase-browser';
+import {
+  MISSION_DEFINITIONS,
+  journeyAround,
+  progressionForXp,
+  type MissionProgress,
+  type Progression,
+} from '../lib/progression';
 
 type Screen = 'home' | 'setup' | 'race' | 'results' | 'leaderboard' | 'account' | 'legal' | 'feedback' | 'passages';
 type LeaderboardEntry = { handle: string; averageWpm: number; accuracy: number; sessions: number; rating: number };
@@ -69,6 +76,7 @@ type Bootstrap = {
   rankedLeaderboards: { mobile: LeaderboardEntry[]; desktop: LeaderboardEntry[] };
   latestRanked: { matchStatus: string; outcome?: string; ratingDelta?: number } | null;
   coachingHistory: CoachingRun[];
+  progression: Progression | null;
 };
 
 type Challenge = {
@@ -102,6 +110,8 @@ type RunTicket = {
 
 type SavedResult = LocalRaceResult & {
   xpEarned: number;
+  missionBonusXp?: number;
+  progression?: Progression | null;
   coachingReport?: PracticeCoachingReport;
   sessionId?: string;
   xpMultiplier?: number;
@@ -144,6 +154,8 @@ type ChallengeAttemptApiResult = {
   xpEarned: number;
   xpMultiplier: number;
   doubleXpUntil?: string | null;
+  missionBonusXp?: number;
+  progression?: Progression | null;
 };
 
 type ChallengeStatusApiResult = Challenge & {
@@ -165,6 +177,8 @@ type SessionApiResult = {
   riskStatus?: string;
   sessionId?: string;
   match?: SavedResult['match'];
+  missionBonusXp?: number;
+  progression?: Progression | null;
 };
 
 type DeferredInstallPrompt = Event & {
@@ -183,6 +197,7 @@ const defaultBootstrap: Bootstrap = {
   rankedLeaderboards: { mobile: [], desktop: [] },
   latestRanked: null,
   coachingHistory: [],
+  progression: null,
 };
 
 export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
@@ -543,6 +558,8 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           creatorMetrics: data.creator,
           creatorHandle: data.creatorHandle,
           doubleXpUntil: data.doubleXpUntil,
+          missionBonusXp: data.missionBonusXp,
+          progression: data.progression,
         });
       } else {
         const response = await authFetch('/api/sessions', {
@@ -659,6 +676,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     <>
       <Header
         player={bootstrap.user}
+        progression={bootstrap.progression}
         loading={loadingProfile}
         onHome={goHome}
         onLeaderboard={() => setScreen('leaderboard')}
@@ -680,6 +698,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           onMode={chooseMode}
           onPassageStudio={openPassageStudio}
           onLeaderboard={() => setScreen('leaderboard')}
+          onSignIn={openAuth}
         />
       )}
 
@@ -782,8 +801,9 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
   );
 }
 
-function Header({ player, loading, onHome, onLeaderboard, onInstall, onAccount, onSignIn, onSignOut }: {
+function Header({ player, progression, loading, onHome, onLeaderboard, onInstall, onAccount, onSignIn, onSignOut }: {
   player: Player;
+  progression: Progression | null;
   loading: boolean;
   onHome: () => void;
   onLeaderboard: () => void;
@@ -810,14 +830,19 @@ function Header({ player, loading, onHome, onLeaderboard, onInstall, onAccount, 
         )}
       </nav>
       <div className="nav-player" aria-live="polite">
-        <span className="nav-avatar">{player.handle?.slice(0, 1).toUpperCase() ?? 'R'}</span>
-        <span><small>{loading ? 'LOADING' : player.signedIn && isBoostActive(player.doubleXpUntil) ? `2× XP · ${boostMinutes(player.doubleXpUntil)}M` : player.signedIn ? `RATING ${player.rating}` : 'LOCAL PLAYER'}</small><b>{player.handle ?? 'Guest Rival'}</b></span>
+        {player.signedIn && progression
+          ? <span className="nav-level" aria-label={`Level ${progression.level.level}`}><small>LV</small><b>{progression.level.level}</b></span>
+          : <span className="nav-avatar">{player.handle?.slice(0, 1).toUpperCase() ?? 'R'}</span>}
+        <span>
+          <small>{loading ? 'LOADING' : player.signedIn && isBoostActive(player.doubleXpUntil) ? `2× XP · ${boostMinutes(player.doubleXpUntil)}M` : player.signedIn && progression ? `${progression.totalXp} XP · RATING ${player.rating}` : player.signedIn ? `RATING ${player.rating}` : 'LOCAL PLAYER'}</small>
+          <b>{player.signedIn && progression ? `${progression.level.name} · ${player.handle}` : player.handle ?? 'Guest Rival'}</b>
+        </span>
       </div>
     </header>
   );
 }
 
-function Home({ bootstrap, localStats, ageBand, language, onLanguage, onMode, onLeaderboard, onPassageStudio }: {
+function Home({ bootstrap, localStats, ageBand, language, onLanguage, onMode, onLeaderboard, onPassageStudio, onSignIn }: {
   bootstrap: Bootstrap;
   localStats: PracticeStats;
   ageBand: AgeBand | null;
@@ -826,6 +851,7 @@ function Home({ bootstrap, localStats, ageBand, language, onLanguage, onMode, on
   onMode: (mode: GameMode) => void;
   onLeaderboard: () => void;
   onPassageStudio: () => void;
+  onSignIn: () => void;
 }) {
   const stats = bootstrap.user.signedIn && ageBand !== 'under13' ? bootstrap.stats : localStats;
   return (
@@ -852,6 +878,12 @@ function Home({ bootstrap, localStats, ageBand, language, onLanguage, onMode, on
         </div>
       </section>
 
+      <ProgressionCommandCenter
+        progression={bootstrap.progression}
+        eligible={ageBand !== 'under13'}
+        onSignIn={onSignIn}
+      />
+
       <section className="modes-section">
         <div className="section-title"><span>CHOOSE YOUR MODE</span><small>{ageBand === 'under13' ? 'JUNIOR PRIVATE PRACTICE' : 'OPEN LADDER · EARLY BETA'}</small></div>
         <LanguageSelector language={language} onLanguage={onLanguage} />
@@ -873,6 +905,87 @@ function Home({ bootstrap, localStats, ageBand, language, onLanguage, onMode, on
       )}
     </main>
   );
+}
+
+function ProgressionCommandCenter({ progression, eligible, onSignIn }: {
+  progression: Progression | null;
+  eligible: boolean;
+  onSignIn: () => void;
+}) {
+  if (!progression) {
+    const preview = progressionForXp(0);
+    return <section className="progression-command progression-guest" aria-labelledby="career-heading">
+      <div className="progression-rank">
+        <span className="eyebrow">RIVAL CAREER</span>
+        <h2 id="career-heading">A reason for every run.</h2>
+        <p>{eligible ? 'Earn permanent XP, climb named levels, and complete rotating missions. Your first verified run starts at Rookie.' : 'Career XP and online missions are available with accounts for players 13 and older. Private Practice remains ready on this device.'}</p>
+        {eligible && <button className="primary-button" onClick={onSignIn}>SIGN IN TO START AT ROOKIE</button>}
+      </div>
+      <LevelJourney level={preview} />
+      <div className="career-checkpoint">
+        <span>THE ROAD AHEAD</span>
+        <b>Rookie → Elite Rival</b>
+        <p>Ten named checkpoints make your lifetime progress visible. XP never resets and has no cash value.</p>
+      </div>
+    </section>;
+  }
+
+  return <section className="progression-command" aria-labelledby="career-heading">
+    <div className="progression-rank">
+      <span className="eyebrow">RIVAL CAREER · LIFETIME XP</span>
+      <div className="rank-line"><strong>{progression.level.level}</strong><span><small>CURRENT LEVEL</small><h2 id="career-heading">{progression.level.name}</h2></span></div>
+      <div className="level-progress-copy">
+        <b>{progression.totalXp.toLocaleString()} XP</b>
+        <span>{progression.level.nextLevel ? `${progression.level.xpForNextLevel - progression.level.xpIntoLevel} XP TO ${progression.level.nextLevel.name.toUpperCase()}` : 'MAX LEVEL REACHED'}</span>
+      </div>
+      <ProgressBar value={progression.level.percent} label={`${Math.round(progression.level.percent)}% to the next level`} />
+    </div>
+
+    <LevelJourney level={progression.level} />
+
+    <div className="mission-board">
+      <header><div><span className="eyebrow">MISSION CONTROL</span><h3>Make today count.</h3></div><small>DAILY 00:00 UTC · WEEKLY MONDAY</small></header>
+      <div className="mission-list">
+        {progression.missions.map((mission) => <MissionRow key={mission.key} mission={mission} />)}
+      </div>
+    </div>
+
+    <aside className="career-checkpoint">
+      <span>CAREER CHECKPOINT</span>
+      <b>{progression.level.name}</b>
+      <dl>
+        <div><dt>ACTIVE TITLE</dt><dd>{progression.level.name}</dd></div>
+        <div><dt>NEXT TITLE</dt><dd>{progression.level.nextLevel?.name ?? 'Career complete'}</dd></div>
+        <div><dt>XP RULE</dt><dd>Permanent · never resets</dd></div>
+      </dl>
+    </aside>
+  </section>;
+}
+
+function LevelJourney({ level }: { level: Progression['level'] }) {
+  return <ol className="level-journey" aria-label="Named level journey">
+    {journeyAround(level.level).map((checkpoint) => {
+      const state = checkpoint.level < level.level ? 'complete' : checkpoint.level === level.level ? 'current' : 'locked';
+      return <li key={checkpoint.level} className={state}>
+        <span>{state === 'complete' ? '✓' : checkpoint.level}</span>
+        <small>LEVEL {checkpoint.level}</small>
+        <b>{checkpoint.name}</b>
+      </li>;
+    })}
+  </ol>;
+}
+
+function MissionRow({ mission }: { mission: MissionProgress }) {
+  const status = mission.claimed ? 'XP BANKED' : mission.completed ? 'COMPLETE' : `${mission.progress}/${mission.target}`;
+  return <article className={`mission-row ${mission.completed ? 'complete' : ''}`}>
+    <div className="mission-status"><span>{mission.completed ? '✓' : mission.cadence === 'daily' ? 'D' : 'W'}</span><small>{mission.cadence.toUpperCase()}</small></div>
+    <div className="mission-copy"><h4>{mission.title}</h4><p>{mission.description}</p><ProgressBar value={mission.progress / mission.target * 100} label={`${mission.progress} of ${mission.target} complete`} /></div>
+    <div className="mission-reward"><b>+{mission.xpReward} XP</b><small>{status}</small></div>
+  </article>;
+}
+
+function ProgressBar({ value, label }: { value: number; label: string }) {
+  return <div className="career-progress" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(value)}><span style={{ width: `${Math.max(0, Math.min(100, value))}%` }} /></div>;
 }
 
 function LanguageSelector({ language, onLanguage, compact = false, disabled = false }: {
@@ -1322,7 +1435,9 @@ function Results({ result, saving, signedIn, playerHandle, message, onRankedMatc
         <span className="eyebrow">{saving ? 'SERVER CHECK' : outcome ? `${outcome.toUpperCase()} · HEAD-TO-HEAD` : 'RUN COMPLETE'}</span>
         <h1>{headline}</h1>
         <p>{custom ? 'Custom-passage results are unverified training: they do not change XP, ratings, verified averages, or public leaderboards.' : result.riskStatus === 'review' ? 'This run is held for integrity review and will not reach public rankings yet.' : result.saved ? 'Your result passed validation and your progress is saved.' : signedIn ? message || 'This result stayed local.' : 'Sign in to save XP, history, and ranked results.'}</p>
-        <div className="reward-card"><span><small>{custom ? 'CUSTOM TRAINING' : 'SESSION REWARD'}</small><b>+{result.xpEarned} XP</b></span><em>{custom ? 'UNVERIFIED' : result.xpMultiplier === 2 ? '2× APPLIED' : result.saved ? 'SAVED' : 'LOCAL'}</em></div>
+        <div className="reward-card"><span><small>{custom ? 'CUSTOM TRAINING' : 'SESSION REWARD'}</small><b>+{result.xpEarned + (result.missionBonusXp ?? 0)} XP</b></span><em>{custom ? 'UNVERIFIED' : result.xpMultiplier === 2 ? '2× APPLIED' : result.saved ? 'SAVED' : 'LOCAL'}</em></div>
+        {(result.missionBonusXp ?? 0) > 0 && <div className="mission-earned"><b>MISSION COMPLETE · +{result.missionBonusXp} XP</b><span>{result.progression?.newlyCompleted.map((key) => missionTitle(key)).join(' · ')}</span></div>}
+        {result.progression && <ResultProgress progression={result.progression} />}
         {outcome === 'win' && isBoostActive(doubleXpUntil) && <div className="boost-earned"><b>2× XP ACTIVATED</b><span>Your next runs earn double XP for about {boostMinutes(doubleXpUntil)} minutes.</span></div>}
         {result.challengeUrl && <button className="share-button" onClick={shareChallenge}>SHARE CHALLENGE LINK ↗</button>}
         {result.mode === 'ranked' && result.match?.status === 'pending' && <div className="pending-match"><i />Result banked. We’ll pair it with the next compatible rival.</div>}
@@ -1331,22 +1446,25 @@ function Results({ result, saving, signedIn, playerHandle, message, onRankedMatc
         {result.friendlyMatch && <div className="pending-match"><i />vs. {result.friendlyMatch.opponentHandle} · friendly result complete</div>}
         {!signedIn && <button className="text-button result-signin" onClick={onSignIn}>SIGN IN TO START YOUR VERIFIED HISTORY →</button>}
       </section>
-      <section className="result-card">
-        <div className="hero-result"><b>{Math.round(result.metrics.netWpm)}</b><small>NET WPM</small></div>
-        <div className="result-grid">
-          <RaceMetric value={`${result.metrics.accuracy.toFixed(1)}%`} label="ACCURACY" accent={result.metrics.accuracy >= 97} />
-          <RaceMetric value={Math.round(result.metrics.grossWpm)} label="GROSS WPM" />
-          <RaceMetric value={result.metrics.incorrectChars} label="ERRORS" warning={result.metrics.incorrectChars > 0} />
-          <RaceMetric value={Math.round(result.metrics.performanceScore)} label="SCORE" />
-        </div>
-        <div className="result-detail-strip">
-          <span><small>CORRECT</small><b>{result.metrics.correctChars}</b></span>
-          <span><small>KEYS SENT</small><b>{result.totalTypedChars}</b></span>
-          <span><small>TIME</small><b>{(result.elapsedMs / 1_000).toFixed(1)}s</b></span>
-          <span><small>CORRECTIONS</small><b>{result.typingProfile.corrections}</b></span>
-        </div>
-        <ShareResultButton result={result} playerHandle={playerHandle} />
-        <div className="result-actions"><button className="primary-button" onClick={onAgain}>RUN IT BACK</button><button className="secondary-button" onClick={onHome}>HOME</button></div>
+      <section className="result-performance">
+        <section className="result-card">
+          <div className="hero-result"><b>{Math.round(result.metrics.netWpm)}</b><small>NET WPM</small></div>
+          <div className="result-grid">
+            <RaceMetric value={`${result.metrics.accuracy.toFixed(1)}%`} label="ACCURACY" accent={result.metrics.accuracy >= 97} />
+            <RaceMetric value={Math.round(result.metrics.grossWpm)} label="GROSS WPM" />
+            <RaceMetric value={result.metrics.incorrectChars} label="ERRORS" warning={result.metrics.incorrectChars > 0} />
+            <RaceMetric value={Math.round(result.metrics.performanceScore)} label="SCORE" />
+          </div>
+          <div className="result-detail-strip">
+            <span><small>CORRECT</small><b>{result.metrics.correctChars}</b></span>
+            <span><small>KEYS SENT</small><b>{result.totalTypedChars}</b></span>
+            <span><small>TIME</small><b>{(result.elapsedMs / 1_000).toFixed(1)}s</b></span>
+            <span><small>CORRECTIONS</small><b>{result.typingProfile.corrections}</b></span>
+          </div>
+          <ShareResultButton result={result} playerHandle={playerHandle} />
+          <div className="result-actions"><button className="primary-button" onClick={onAgain}>RUN IT BACK</button><button className="secondary-button" onClick={onHome}>HOME</button></div>
+        </section>
+        <ResultInsightRail result={result} onAgain={onAgain} />
       </section>
       {(result.passage.learning || custom) && <LearningCard passage={result.passage} />}
       {result.mode === 'practice'
@@ -1354,6 +1472,50 @@ function Results({ result, saving, signedIn, playerHandle, message, onRankedMatc
         : <CompetitiveBreakdown result={result} playerHandle={playerHandle} />}
     </main>
   );
+}
+
+function ResultProgress({ progression }: { progression: Progression }) {
+  return <div className="result-level-progress">
+    <div><span>LV {progression.level.level}</span><b>{progression.level.name}</b><small>{progression.totalXp.toLocaleString()} TOTAL XP</small></div>
+    <ProgressBar value={progression.level.percent} label={`${Math.round(progression.level.percent)}% to the next level`} />
+    <small>{progression.level.nextLevel ? `${progression.level.xpForNextLevel - progression.level.xpIntoLevel} XP TO ${progression.level.nextLevel.name.toUpperCase()}` : 'ELITE RIVAL ACHIEVED'}</small>
+  </div>;
+}
+
+function ResultInsightRail({ result, onAgain }: { result: SavedResult; onAgain: () => void }) {
+  const practiceReport = result.mode === 'practice' ? result.coachingReport ?? buildPracticeCoachingReport({
+    passage: result.passage.text,
+    input: result.input,
+    metrics: result.metrics,
+    profile: result.typingProfile,
+  }) : null;
+  const competitiveInsights = [
+    {
+      label: 'ACCURACY GATE',
+      title: result.metrics.accuracy >= 90 ? 'Gate cleared.' : 'Accuracy cost the race.',
+      body: result.metrics.accuracy >= 90 ? `${result.metrics.accuracy.toFixed(1)}% keeps this performance fully competitive.` : 'Reach 90% accuracy before adding more pace.',
+    },
+    {
+      label: 'PACE CONTROL',
+      title: `${Math.max(0, Math.round(result.metrics.grossWpm - result.metrics.netWpm))} WPM lost to errors`,
+      body: result.metrics.incorrectChars === 0 ? 'A clean run: your gross and net pace stayed aligned.' : `${result.metrics.incorrectChars} errors opened the gap between raw speed and your scored pace.`,
+    },
+    {
+      label: 'NEXT MOVE',
+      title: result.metrics.accuracy >= 97 ? 'Push the pace.' : 'Protect the rhythm.',
+      body: result.metrics.accuracy >= 97 ? 'You have enough control to target a slightly faster opening.' : 'Start five percent slower and build speed after the first clean sentence.',
+    },
+  ];
+
+  return <aside className="result-insight-rail" aria-label="Visible coaching insights">
+    <header><span className="eyebrow">COACHING · ALWAYS VISIBLE</span><h2>Read the run.</h2><p>{practiceReport?.summary ?? 'Three signals to carry into the next head-to-head.'}</p></header>
+    <div>
+      {(practiceReport ? practiceReport.insights.slice(0, 3).map((insight) => ({ label: insight.label, title: insight.title, body: insight.body })) : competitiveInsights).map((insight) => <article key={`${insight.label}-${insight.title}`}>
+        <span>{insight.label}</span><h3>{insight.title}</h3><p>{insight.body}</p>
+      </article>)}
+    </div>
+    <button className="secondary-button" onClick={onAgain}>{practiceReport ? 'RUN IT BACK WITH THIS FOCUS' : 'TAKE ANOTHER RUN'}</button>
+  </aside>;
 }
 
 function LearningCard({ passage }: { passage: Passage }) {
@@ -1602,7 +1764,7 @@ function Account({ player, onBack, onUpdated, onDeleted }: {
         </section>
         <section className="account-card">
           <h2>Your data</h2>
-          <p>Download a JSON copy of your profile, saved runs, Practice coaching history, friendly challenges, challenge attempts, feedback, and passage submissions.</p>
+          <p>Download a JSON copy of your profile, saved runs, Practice coaching history, mission rewards, friendly challenges, challenge attempts, feedback, and passage submissions.</p>
           <button className="secondary-button" onClick={() => void downloadExport()} disabled={busy}>DOWNLOAD MY DATA</button>
         </section>
         <section className="account-card danger-card">
@@ -1626,7 +1788,7 @@ function Legal({ onBack }: { onBack: () => void }) {
         <article><h2>Free MVP</h2><p>TypeRival currently has no entry fees, wagers, cash wallet, purchasable competitive advantage, or cash prizes. XP has no cash value and cannot be transferred, sold, or redeemed.</p></article>
         <article><h2>Scoring</h2><p>Net WPM is based on correct characters and errors. A player below 90% accuracy cannot defeat a player at or above 90%. Remaining ties use performance score, then accuracy. Clear signed-in runs can enter the rolling 30-day leaderboard immediately.</p></article>
         <article><h2>Fair play</h2><p>Automated typing, scripts, macros, emulators used to falsify input, account sharing, collusion, exploiting bugs, and manipulating results are prohibited. TypeRival may hold, remove, or invalidate suspicious results and restrict accounts that threaten the competition.</p></article>
-        <article><h2>Information collected</h2><p>For signed-in players, TypeRival stores an account identifier, email through the authentication provider, public handle, run metrics, passage and timing data, broad device class, XP, rating, match outcomes, and challenge activity. Practice coaching also stores limited derived signals such as corrections, first-attempt character substitutions, and major hesitations. Operational systems may process IP addresses, device details, and request logs for security and reliability.</p></article>
+        <article><h2>Information collected</h2><p>For signed-in players, TypeRival stores an account identifier, email through the authentication provider, public handle, run metrics, passage and timing data, broad device class, XP, level and mission reward history, rating, match outcomes, and challenge activity. Practice coaching also stores limited derived signals such as corrections, first-attempt character substitutions, and major hesitations. Operational systems may process IP addresses, device details, and request logs for security and reliability.</p></article>
         <article><h2>How information is used</h2><p>Information is used to authenticate players, save progress, calculate rankings, operate challenges, prevent abuse, troubleshoot failures, and improve the service. TypeRival does not sell personal information or use gameplay data for third-party advertising in this MVP.</p></article>
         <article><h2>Sharing and processors</h2><p>Supabase processes authentication and database data, while Vercel hosts the web application and operational logs. Google processes information when Google sign-in is selected. Data may also be disclosed when required by law or necessary to protect users and the service.</p></article>
         <article><h2>Retention and control</h2><p>Saved gameplay and signed-in coaching history remain while an account is active unless operational or legal needs require a different period. Players can download their TypeRival data and permanently delete their account from the Account page. Guest and under-13 coaching history stays on the device and can be removed by clearing browser site data.</p></article>
@@ -1728,6 +1890,10 @@ function formatDelta(value?: number) {
 function formatCoachDelta(value: number | null) {
   if (value === null) return 'BUILDING';
   return `${value > 0 ? '+' : ''}${value.toFixed(1)}`;
+}
+
+function missionTitle(key: string) {
+  return MISSION_DEFINITIONS.find((mission) => mission.key === key)?.title ?? key;
 }
 
 function isBoostActive(value?: string | null) {

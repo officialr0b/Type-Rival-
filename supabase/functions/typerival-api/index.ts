@@ -19,6 +19,14 @@ import {
 } from '../../../lib/game.ts';
 import { updateGlicko2 } from '../../../lib/glicko2.ts';
 import { createCoachingRun, type CoachingRun, type TypingProfile } from '../../../lib/result-coaching.ts';
+import {
+  MISSION_DEFINITIONS,
+  progressionForXp,
+  utcMissionPeriod,
+  type MissionKey,
+  type MissionProgress,
+  type Progression,
+} from '../../../lib/progression.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -205,6 +213,7 @@ async function bootstrap(url: URL, user: User | null) {
   let stats = { sessions: 0, averageWpm: 0, bestWpm: 0, accuracy: 0, activeDays: 0 };
   let latestRanked: Record<string, unknown> | null = null;
   let coachingHistory: CoachingRun[] = [];
+  let progression: Progression | null = null;
   if (player) {
     const statsQuery = await admin.rpc('tr_get_player_stats', { p_user_id: player.id, p_cutoff: cutoff, p_language: language });
     if (statsQuery.error) throw new ServiceError('bootstrap:stats', statsQuery.error);
@@ -232,13 +241,14 @@ async function bootstrap(url: URL, user: User | null) {
       };
     }
     coachingHistory = await loadPracticeCoachingHistory(player.id, language);
+    progression = await loadProgression(player, false);
   }
 
   return {
     user: player ? {
       signedIn: true,
       handle: player.handle,
-      xp: player.xp,
+      xp: progression?.totalXp ?? player.xp,
       rating: Math.round(player.rating),
       gamesPlayed: player.games_played,
       wins: player.wins,
@@ -251,7 +261,112 @@ async function bootstrap(url: URL, user: User | null) {
     rankedLeaderboards,
     latestRanked,
     coachingHistory,
+    progression,
     language,
+  };
+}
+
+async function loadProgression(player: PlayerRow, claimCompleted: boolean): Promise<Progression> {
+  const now = new Date();
+  const dailyPeriod = utcMissionPeriod(now, 'daily');
+  const weeklyPeriod = utcMissionPeriod(now, 'weekly');
+  const [dailySessions, weeklyFriendlySessions, weeklyAttempts, claims] = await Promise.all([
+    admin.from('sessions')
+      .select('passage_id, mode, accuracy')
+      .eq('user_id', player.id)
+      .eq('risk_status', 'clear')
+      .gte('created_at', dailyPeriod.startIso),
+    admin.from('sessions')
+      .select('id')
+      .eq('user_id', player.id)
+      .eq('mode', 'friendly')
+      .eq('risk_status', 'clear')
+      .gte('created_at', weeklyPeriod.startIso),
+    admin.from('challenge_attempts')
+      .select('challenge_id')
+      .eq('user_id', player.id)
+      .eq('risk_status', 'clear')
+      .gte('created_at', weeklyPeriod.startIso),
+    admin.from('mission_claims')
+      .select('mission_key, period_start')
+      .eq('user_id', player.id)
+      .gte('period_start', weeklyPeriod.periodStart),
+  ]);
+  if (dailySessions.error) throw new ServiceError('progression:daily_sessions', dailySessions.error);
+  if (weeklyFriendlySessions.error) throw new ServiceError('progression:friendly_sessions', weeklyFriendlySessions.error);
+  if (weeklyAttempts.error) throw new ServiceError('progression:challenge_attempts', weeklyAttempts.error);
+  if (claims.error) throw new ServiceError('progression:claims', claims.error);
+
+  const challengeIds = [...new Set((weeklyAttempts.data ?? []).map((attempt) => String(attempt.challenge_id)))];
+  let verifiedChallengeAttempts = 0;
+  if (challengeIds.length > 0) {
+    const challenges = await admin.from('challenges').select('id').in('id', challengeIds).is('custom_text', null);
+    if (challenges.error) throw new ServiceError('progression:verified_challenges', challenges.error);
+    verifiedChallengeAttempts = challenges.data?.length ?? 0;
+  }
+
+  const cleanPracticeRuns = (dailySessions.data ?? []).filter((session) =>
+    session.mode === 'practice' && Number(session.accuracy) >= 92
+  ).length;
+  const learningCategories = new Set((dailySessions.data ?? [])
+    .filter((session) => session.mode === 'practice')
+    .map((session) => getPassage(String(session.passage_id)))
+    .filter((passage): passage is Passage => Boolean(passage?.learning))
+    .map((passage) => passage.category));
+  const progressByMission: Record<MissionKey, number> = {
+    'daily-clean-hands': cleanPracticeRuns,
+    'daily-field-study': learningCategories.size,
+    'weekly-open-challenge': (weeklyFriendlySessions.data?.length ?? 0) + verifiedChallengeAttempts,
+  };
+  const claimedPeriods = new Set((claims.data ?? []).map((claim) => `${claim.mission_key}:${claim.period_start}`));
+
+  const missions: MissionProgress[] = MISSION_DEFINITIONS.map((definition) => {
+    const period = definition.cadence === 'daily' ? dailyPeriod : weeklyPeriod;
+    const progress = Math.min(definition.target, progressByMission[definition.key]);
+    return {
+      ...definition,
+      progress,
+      completed: progress >= definition.target,
+      claimed: claimedPeriods.has(`${definition.key}:${period.periodStart}`),
+      periodStart: period.periodStart,
+      resetAt: period.resetAt,
+    };
+  });
+
+  let missionBonusXp = 0;
+  const newlyCompleted: MissionKey[] = [];
+  if (claimCompleted) {
+    const awards = await Promise.all(missions
+      .filter((mission) => mission.completed && !mission.claimed)
+      .map(async (mission) => {
+        const claimed = await admin.rpc('tr_claim_mission', {
+          p_user_id: player.id,
+          p_mission_key: mission.key,
+          p_period_start: mission.periodStart,
+        });
+        if (claimed.error) throw new ServiceError('progression:claim', claimed.error);
+        return { mission, xp: Number(claimed.data ?? 0) };
+      }));
+    for (const award of awards) {
+      if (award.xp <= 0) continue;
+      award.mission.claimed = true;
+      missionBonusXp += award.xp;
+      newlyCompleted.push(award.mission.key);
+    }
+  }
+
+  let totalXp = player.xp;
+  if (claimCompleted) {
+    const refreshed = await admin.from('players').select('xp').eq('id', player.id).single();
+    if (refreshed.error) throw new ServiceError('progression:xp', refreshed.error);
+    totalXp = Number(refreshed.data.xp);
+  }
+  return {
+    totalXp,
+    level: progressionForXp(totalXp),
+    missions,
+    missionBonusXp,
+    newlyCompleted,
   };
 }
 
@@ -505,6 +620,7 @@ async function submitSession(request: Request, user: User | null) {
   const match = mode === 'ranked' && riskStatus === 'clear'
     ? await tryRankedMatch(session.id, player, passage.id, ticket.device_class)
     : null;
+  const progression = await loadProgression(player, riskStatus === 'clear');
 
   return json({
     metrics,
@@ -515,6 +631,8 @@ async function submitSession(request: Request, user: User | null) {
     riskStatus,
     sessionId: session.id,
     match,
+    progression,
+    missionBonusXp: progression.missionBonusXp,
   });
 }
 
@@ -875,6 +993,7 @@ async function attemptChallenge(request: Request, code: string, user: User | nul
     p_creator_user_id: loaded.data.creator_user_id,
   });
   if (recorded.error) throw recorded.error;
+  const progression = await loadProgression(player, true);
   return json({
     outcome,
     challenger,
@@ -885,6 +1004,8 @@ async function attemptChallenge(request: Request, code: string, user: User | nul
     xpMultiplier,
     riskStatus,
     doubleXpUntil: outcome === 'win' ? boostUntil : player.double_xp_until,
+    progression,
+    missionBonusXp: progression.missionBonusXp,
   });
 }
 
@@ -1067,7 +1188,7 @@ async function submitFeedback(request: Request, user: User | null) {
 
 async function exportAccount(user: User | null) {
   if (!user) return json({ error: 'Sign in to export your account.' }, 401);
-  const [profile, sessions, challenges, attempts, feedback, coaching, passageSubmissions] = await Promise.all([
+  const [profile, sessions, challenges, attempts, feedback, coaching, passageSubmissions, missionClaims] = await Promise.all([
     admin.from('players').select('*').eq('id', user.id).maybeSingle(),
     admin.from('sessions').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
     admin.from('challenges').select('*').eq('creator_user_id', user.id).order('created_at', { ascending: false }),
@@ -1075,6 +1196,7 @@ async function exportAccount(user: User | null) {
     admin.from('feedback_submissions').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
     admin.from('practice_coaching_runs').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
     admin.from('passage_submissions').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
+    admin.from('mission_claims').select('*').eq('user_id', user.id).order('claimed_at', { ascending: false }),
   ]);
   if (profile.error) throw new ServiceError('account_export:profile', profile.error);
   if (sessions.error) throw new ServiceError('account_export:sessions', sessions.error);
@@ -1083,6 +1205,7 @@ async function exportAccount(user: User | null) {
   if (feedback.error) throw new ServiceError('account_export:feedback', feedback.error);
   if (coaching.error) throw new ServiceError('account_export:coaching', coaching.error);
   if (passageSubmissions.error) throw new ServiceError('account_export:passage_submissions', passageSubmissions.error);
+  if (missionClaims.error) throw new ServiceError('account_export:mission_claims', missionClaims.error);
   const exportedAt = new Date().toISOString();
   return new Response(JSON.stringify({
     exportedAt,
@@ -1094,6 +1217,7 @@ async function exportAccount(user: User | null) {
     feedback: feedback.data,
     practiceCoaching: coaching.data,
     passageSubmissions: passageSubmissions.data,
+    missionClaims: missionClaims.data,
   }, null, 2), {
     status: 200,
     headers: {
