@@ -1,5 +1,6 @@
 import type { NextConfig } from 'next';
 
+const realtimeEndpoint = process.env.NEXT_PUBLIC_COLYSEUS_URL?.replace(/\/$/, '');
 const contentSecurityPolicy = [
   "default-src 'self'",
   "base-uri 'self'",
@@ -10,7 +11,7 @@ const contentSecurityPolicy = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
-  "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
+  `connect-src 'self' https://*.supabase.co wss://*.supabase.co${realtimeEndpoint ? ` ${realtimeEndpoint}` : ''}${process.env.NODE_ENV === 'development' ? ' ws://localhost:2567 http://localhost:2567' : ''}`,
   "manifest-src 'self'",
   "worker-src 'self' blob:",
   'upgrade-insecure-requests',

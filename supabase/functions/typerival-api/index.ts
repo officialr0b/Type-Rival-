@@ -4,6 +4,7 @@ import {
   calculateMetrics,
   decideWinner,
   getPassage,
+  inputMethodFromTelemetry,
   isPassageCategory,
   isTypingLanguage,
   normalizeTypingInput,
@@ -13,6 +14,8 @@ import {
   xpForMode,
   type DeviceClass,
   type GameMode,
+  type InputMethod,
+  type InputTelemetry,
   type Passage,
   type PassageCategorySelection,
   type TypingLanguage,
@@ -93,6 +96,8 @@ Deno.serve(async (request) => {
     let response: Response;
     if (request.method === 'GET' && route[0] === 'bootstrap') {
       response = json(await bootstrap(url, user));
+    } else if (request.method === 'GET' && route[0] === 'realtime' && route[1] === 'identity') {
+      response = await realtimeIdentity(user);
     } else if (request.method === 'GET' && route[0] === 'passages' && route[1] === 'submissions') {
       response = await listPassageSubmissions(user);
     } else if (request.method === 'POST' && route[0] === 'passages' && route[1] === 'submissions') {
@@ -189,14 +194,16 @@ async function bootstrap(url: URL, user: User | null) {
     }
   }
   const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000).toISOString();
-  const [boardQuery, mobileRankedQuery, desktopRankedQuery] = await Promise.all([
+  const [boardQuery, touchRankedQuery, swipeRankedQuery, hardwareRankedQuery] = await Promise.all([
     admin.rpc('tr_get_leaderboard', { p_cutoff: cutoff, p_language: language, p_limit: 10 }),
-    admin.rpc('tr_get_ranked_leaderboard', { p_cutoff: cutoff, p_device_class: 'mobile', p_language: language, p_limit: 10 }),
-    admin.rpc('tr_get_ranked_leaderboard', { p_cutoff: cutoff, p_device_class: 'desktop', p_language: language, p_limit: 10 }),
+    admin.rpc('tr_get_ranked_leaderboard', { p_cutoff: cutoff, p_device_class: 'mobile', p_input_method: 'mobile_touch', p_language: language, p_limit: 10 }),
+    admin.rpc('tr_get_ranked_leaderboard', { p_cutoff: cutoff, p_device_class: 'mobile', p_input_method: 'mobile_swipe', p_language: language, p_limit: 10 }),
+    admin.rpc('tr_get_ranked_leaderboard', { p_cutoff: cutoff, p_device_class: 'desktop', p_input_method: 'hardware', p_language: language, p_limit: 10 }),
   ]);
   if (boardQuery.error) throw new ServiceError('bootstrap:leaderboard', boardQuery.error);
-  if (mobileRankedQuery.error) throw new ServiceError('bootstrap:ranked_mobile', mobileRankedQuery.error);
-  if (desktopRankedQuery.error) throw new ServiceError('bootstrap:ranked_desktop', desktopRankedQuery.error);
+  if (touchRankedQuery.error) throw new ServiceError('bootstrap:ranked_touch', touchRankedQuery.error);
+  if (swipeRankedQuery.error) throw new ServiceError('bootstrap:ranked_swipe', swipeRankedQuery.error);
+  if (hardwareRankedQuery.error) throw new ServiceError('bootstrap:ranked_hardware', hardwareRankedQuery.error);
   const mapLeaderboard = (rows: Record<string, unknown>[]) => rows.map((entry) => ({
     handle: String(entry.handle),
     averageWpm: Number(entry.average_wpm),
@@ -205,9 +212,16 @@ async function bootstrap(url: URL, user: User | null) {
     rating: Number(entry.rating),
   }));
   const leaderboard = mapLeaderboard((boardQuery.data ?? []) as Record<string, unknown>[]);
+  const mobileTouch = mapLeaderboard((touchRankedQuery.data ?? []) as Record<string, unknown>[]);
+  const mobileSwipe = mapLeaderboard((swipeRankedQuery.data ?? []) as Record<string, unknown>[]);
+  const hardware = mapLeaderboard((hardwareRankedQuery.data ?? []) as Record<string, unknown>[]);
   const rankedLeaderboards = {
-    mobile: mapLeaderboard((mobileRankedQuery.data ?? []) as Record<string, unknown>[]),
-    desktop: mapLeaderboard((desktopRankedQuery.data ?? []) as Record<string, unknown>[]),
+    mobile_touch: mobileTouch,
+    mobile_swipe: mobileSwipe,
+    hardware,
+    // Keep the pre-swipe web build healthy during the staged database/API/web rollout.
+    mobile: mobileTouch,
+    desktop: hardware,
   };
 
   let stats = { sessions: 0, averageWpm: 0, bestWpm: 0, accuracy: 0, activeDays: 0 };
@@ -264,6 +278,12 @@ async function bootstrap(url: URL, user: User | null) {
     progression,
     language,
   };
+}
+
+async function realtimeIdentity(user: User | null) {
+  if (!user) return json({ error: 'Sign in to join a live room.' }, 401);
+  const player = await ensurePlayer(user);
+  return json({ userId: player.id, handle: player.handle });
 }
 
 async function loadProgression(player: PlayerRow, claimCompleted: boolean): Promise<Progression> {
@@ -560,6 +580,7 @@ async function submitSession(request: Request, user: User | null) {
     runTicketId?: string;
     ageBand?: 'under13' | 'teen' | 'adult';
     typingProfile?: unknown;
+    inputTelemetry?: unknown;
     coachingInsightKeys?: unknown;
   };
   const mode = body.mode;
@@ -581,6 +602,7 @@ async function submitSession(request: Request, user: User | null) {
 
   const metrics = calculateMetrics(passage.text, input, elapsedMs, totalTypedChars);
   const coachingProfile = mode === 'practice' ? sanitizeTypingProfile(body.typingProfile) : emptySubmittedTypingProfile();
+  const inputTelemetry = sanitizeInputTelemetry(body.inputTelemetry);
   const coachingInsightKeys = mode === 'practice' ? sanitizeInsightKeys(body.coachingInsightKeys) : [];
   const riskStatus = runRiskStatus(metrics.grossWpm, totalTypedChars, elapsedMs);
   const baseXp = xpForMode(mode);
@@ -596,6 +618,7 @@ async function submitSession(request: Request, user: User | null) {
   }
   if (typeof body.runTicketId !== 'string') return json({ error: 'Start a new authorized run before submitting.' }, 409);
   const ticket = await consumeRunTicket(user, body.runTicketId, mode, passage.id, passage.language, durationSec, elapsedMs);
+  const inputMethod = inputMethodFromTelemetry(ticket.device_class === 'desktop' ? 'desktop' : 'mobile', inputTelemetry);
 
   const player = await ensurePlayer(user);
   const doubleXpActive = Boolean(player.double_xp_until && Date.parse(player.double_xp_until) > Date.now());
@@ -620,6 +643,8 @@ async function submitSession(request: Request, user: User | null) {
     p_run_ticket_id: body.runTicketId,
     p_language: passage.language,
     p_device_class: ticket.device_class,
+    p_input_method: inputMethod,
+    p_input_telemetry: inputTelemetry,
     p_coaching_corrections: coachingProfile.corrections,
     p_coaching_first_try_errors: coachingProfile.firstTryErrors,
     p_coaching_pause_count: coachingProfile.pauseCount,
@@ -631,7 +656,7 @@ async function submitSession(request: Request, user: User | null) {
   if (inserted.error) throw inserted.error;
   const session = Array.isArray(inserted.data) ? inserted.data[0] : inserted.data;
   const match = mode === 'ranked' && riskStatus === 'clear'
-    ? await tryRankedMatch(session.id, player, passage.id, ticket.device_class)
+    ? await tryRankedMatch(session.id, player, passage.id, ticket.device_class, inputMethod)
     : null;
   const progression = riskStatus === 'clear' ? await loadProgressionAfterRun(player) : null;
 
@@ -646,6 +671,7 @@ async function submitSession(request: Request, user: User | null) {
     match,
     progression,
     missionBonusXp: progression?.missionBonusXp ?? 0,
+    inputMethod,
   });
 }
 
@@ -690,12 +716,13 @@ async function loadSessionResult(sessionId: string, user: User | null) {
   });
 }
 
-async function tryRankedMatch(sessionId: string, player: PlayerRow, passageId: string, deviceClass: DeviceClass | 'unknown') {
+async function tryRankedMatch(sessionId: string, player: PlayerRow, passageId: string, deviceClass: DeviceClass | 'unknown', inputMethod: InputMethod) {
   const claimed = await admin.rpc('tr_claim_ranked_pair', {
     p_session_id: sessionId,
     p_user_id: player.id,
     p_passage_id: passageId,
     p_device_class: deviceClass,
+    p_input_method: inputMethod,
     p_current_rating: player.rating,
     p_rating_window: 250,
   });
@@ -1351,6 +1378,16 @@ function sanitizeInsightKeys(value: unknown) {
   return value
     .filter((key): key is string => typeof key === 'string' && /^[a-z0-9:-]{1,80}$/i.test(key))
     .slice(0, 6);
+}
+
+function sanitizeInputTelemetry(value: unknown): InputTelemetry {
+  const submitted = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  return {
+    physicalKeyEvents: boundedInteger(submitted.physicalKeyEvents, 0, 2_000),
+    singleInsertEvents: boundedInteger(submitted.singleInsertEvents, 0, 2_000),
+    bulkInsertEvents: boundedInteger(submitted.bulkInsertEvents, 0, 500),
+    replacementEvents: boundedInteger(submitted.replacementEvents, 0, 500),
+  };
 }
 
 function boundedInteger(value: unknown, minimum: number, maximum: number) {

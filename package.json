@@ -12,11 +12,14 @@
     "start": "next start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "typecheck": "tsc --noEmit",
+    "typecheck:realtime": "pnpm --filter @typerival/realtime typecheck",
     "test": "node --test lib/*.test.ts",
+    "test:realtime": "pnpm --filter @typerival/realtime test",
     "audit": "pnpm audit --prod --audit-level high",
-    "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm build"
+    "verify": "pnpm typecheck && pnpm typecheck:realtime && pnpm lint && pnpm test && pnpm test:realtime && pnpm build"
   },
   "dependencies": {
+    "@colyseus/sdk": "0.18.2",
     "@supabase/supabase-js": "2.112.4",
     "@vercel/analytics": "2.0.1",
     "next": "16.3.3",
