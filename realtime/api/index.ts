@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { Server } from '@colyseus/core';
 import { WebSocketTransport } from '@colyseus/ws-transport';
-import { LiveTypingRoom } from './LiveTypingRoom.js';
+import { LiveTypingRoom } from '../src/LiveTypingRoom.js';
 
 const httpServer = createServer();
 const gameServer = new Server({
