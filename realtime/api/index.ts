@@ -1,15 +1,17 @@
 import { createServer } from 'node:http';
 import { Server } from '@colyseus/core';
 import { WebSocketTransport } from '@colyseus/ws-transport';
+import type { Application, Request, Response } from 'express';
 import { LiveTypingRoom } from '../src/LiveTypingRoom.js';
 
 const httpServer = createServer();
 const gameServer = new Server({
-  transport: new WebSocketTransport({ server: httpServer }),
-  express: (app) => {
+  transport: new WebSocketTransport({ server: httpServer } as unknown as ConstructorParameters<typeof WebSocketTransport>[0]),
+  express: (colyseusApp) => {
+    const app = colyseusApp as unknown as Application;
     app.disable('x-powered-by');
-    app.get('/', (_request, response) => response.json({ service: 'typerival-realtime', status: 'ready' }));
-    app.get('/health', (_request, response) => response.json({ ok: true, transport: 'colyseus-websocket' }));
+    app.get('/', (_request: Request, response: Response) => response.json({ service: 'typerival-realtime', status: 'ready' }));
+    app.get('/health', (_request: Request, response: Response) => response.json({ ok: true, transport: 'colyseus-websocket' }));
   },
 });
 gameServer.define('live_friendly', LiveTypingRoom);
