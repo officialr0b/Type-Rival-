@@ -61,3 +61,5 @@ $$;
 
 revoke all on function public.tr_claim_mission(uuid, text, date) from public, anon, authenticated;
 grant execute on function public.tr_claim_mission(uuid, text, date) to service_role;
+
+-- Migration version matches the production Supabase migration ledger.
