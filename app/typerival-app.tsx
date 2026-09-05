@@ -1170,6 +1170,29 @@ function resetRaceInputField(field: HTMLTextAreaElement) {
   field.setSelectionRange(RACE_INPUT_SENTINEL.length, RACE_INPUT_SENTINEL.length);
 }
 
+function focusRaceInput(field: HTMLTextAreaElement | null) {
+  if (!field) return;
+  try {
+    field.focus({ preventScroll: true });
+  } catch {
+    field.focus();
+  }
+}
+
+function keepCharacterInPassageView(container: HTMLElement | null, character: HTMLElement | null) {
+  if (!container || !character) return;
+  const containerRect = container.getBoundingClientRect();
+  const characterRect = character.getBoundingClientRect();
+  const topBuffer = Math.min(48, container.clientHeight * 0.2);
+  const bottomBuffer = Math.min(72, container.clientHeight * 0.3);
+
+  if (characterRect.top < containerRect.top + topBuffer) {
+    container.scrollTop -= containerRect.top + topBuffer - characterRect.top;
+  } else if (characterRect.bottom > containerRect.bottom - bottomBuffer) {
+    container.scrollTop += characterRect.bottom - (containerRect.bottom - bottomBuffer);
+  }
+}
+
 function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel, onComplete }: {
   mode: GameMode;
   durationSec: number;
@@ -1188,6 +1211,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
   const [remainingMs, setRemainingMs] = useState(durationSec * 1_000);
   const [totalTypedChars, setTotalTypedChars] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const passageCardRef = useRef<HTMLElement>(null);
   const currentCharacterRef = useRef<HTMLSpanElement>(null);
   const startedAt = useRef(0);
   const finished = useRef(false);
@@ -1228,7 +1252,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
   useEffect(() => {
     if (!active) return;
     const frame = window.requestAnimationFrame(() => {
-      currentCharacterRef.current?.scrollIntoView({ block: 'center', inline: 'nearest' });
+      keepCharacterInPassageView(passageCardRef.current, currentCharacterRef.current);
     });
     return () => window.cancelAnimationFrame(frame);
   }, [active, input]);
@@ -1406,7 +1430,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
         activeRef.current = true;
         setActive(true);
         setCountdown(0);
-        window.setTimeout(() => inputRef.current?.focus(), 80);
+        window.setTimeout(() => focusRaceInput(inputRef.current), 80);
       } else {
         setCountdown((value) => value - 1);
       }
@@ -1497,7 +1521,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
   }, [applyRaceEdit, applySwipeValue, inputPreference]);
 
   const armRace = async () => {
-    inputRef.current?.focus();
+    focusRaceInput(inputRef.current);
     setArming(true); setArmError('');
     try {
       await onArm();
@@ -1510,7 +1534,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
   };
 
   return (
-    <main className="race-page game-page" onClick={() => inputRef.current?.focus()}>
+    <main className="race-page game-page" onClick={() => focusRaceInput(inputRef.current)}>
       <header className="race-top"><button onClick={(event) => { event.stopPropagation(); onCancel(); }}>✕ EXIT</button><span>{mode.toUpperCase()} · {languageName(passage.language).toUpperCase()}</span><small>BACKSPACE ENABLED · {inputPreference === 'swipe' ? 'SWIPE INPUT READY' : 'TAP INPUT READY'}</small></header>
       <section className="race-hud">
         <RaceMetric value={Math.round(metrics.netWpm)} label="NET WPM" accent />
@@ -1519,7 +1543,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
         <RaceMetric value={metrics.incorrectChars} label="ERRORS" warning={metrics.incorrectChars > 0} />
         <RaceMetric value={`${inputCharacters.length}/${passageCharacters.length}`} label="PROGRESS" />
       </section>
-      <section className="passage-card">
+      <section className="passage-card" ref={passageCardRef}>
         {!armed ? (
           <div className="countdown ready-prompt"><small>KEYBOARD CHECK</small><b>READY?</b><span>Tap once to open your keyboard and begin the countdown.</span>{armError && <span className="inline-error" role="alert">{armError}</span>}<button className="primary-button" onClick={() => void armRace()} disabled={arming}>{arming ? 'CONNECTING…' : 'TAP TO START'}</button></div>
         ) : !active ? (
@@ -1537,7 +1561,6 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
         )}
       </section>
       <div className={`race-input-shell ${inputPreference === 'swipe' ? 'native-swipe' : ''}`}>
-        {inputPreference === 'swipe' && <label htmlFor="race-typing-input"><b>QUICKPATH INPUT</b><small>Swipe normally here. TypeRival reads each completed keyboard update.</small></label>}
         <textarea
           id="race-typing-input"
           ref={inputRef}
@@ -1546,7 +1569,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
           onFocus={(event) => { if (inputPreference !== 'swipe') resetRaceInputField(event.currentTarget); }}
           onPaste={(event) => event.preventDefault()}
           onDrop={(event) => event.preventDefault()}
-          onBlur={() => { if (active && !finished.current) setTimeout(() => inputRef.current?.focus(), 100); }}
+          onBlur={() => { if (active && !finished.current) setTimeout(() => focusRaceInput(inputRef.current), 100); }}
           autoComplete="off"
           autoCorrect={inputPreference === 'swipe' ? 'on' : 'off'}
           autoCapitalize={inputPreference === 'swipe' ? 'sentences' : 'none'}
@@ -1555,7 +1578,6 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
           rows={1}
           wrap="off"
           spellCheck={inputPreference === 'swipe'}
-          placeholder={inputPreference === 'swipe' ? 'Swipe the passage here…' : undefined}
           aria-label="Race typing input"
         />
       </div>
@@ -1870,7 +1892,7 @@ function Leaderboard({ data, language, onLanguage, onBack }: {
   const entries = board === 'open'
     ? data.openLeaderboards[inputMethod] ?? []
     : data.rankedLeaderboards[inputMethod] ?? [];
-  const title = board === 'open' ? 'Open leaderboard' : 'Ranked leaderboard';
+  const title = board === 'open' ? 'Practice leaderboard' : 'Ranked leaderboard';
   const description = board === 'open'
     ? 'You can hit the leaderboard as soon as your first run is complete. Clear, signed-in results count toward your rolling 30-day averages in the matching input lane.'
     : '45-second ranked runs only. Tap, swipe, and hardware input each have a fair lane.';
@@ -1880,7 +1902,7 @@ function Leaderboard({ data, language, onLanguage, onBack }: {
       <header><div><span className="eyebrow">ROLLING 30 DAYS · {languageName(language).toUpperCase()}</span><h1>{title}</h1><p>{description}</p></div><button className="back-button" onClick={onBack}>← BACK HOME</button></header>
       <LanguageSelector language={language} onLanguage={onLanguage} compact />
       <nav className="leaderboard-tabs" aria-label="Leaderboard type">
-        <button className={board === 'open' ? 'selected' : ''} aria-pressed={board === 'open'} onClick={() => setBoard('open')}>OPEN</button>
+        <button className={board === 'open' ? 'selected' : ''} aria-pressed={board === 'open'} onClick={() => setBoard('open')}>PRACTICE</button>
         <button className={board === 'ranked' ? 'selected' : ''} aria-pressed={board === 'ranked'} onClick={() => setBoard('ranked')}>RANKED</button>
       </nav>
       <nav className="leaderboard-subtabs" aria-label={`${title} input method`}>
