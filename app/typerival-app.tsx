@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import AuthModal from './auth-modal';
+import { InputDiagnosticOverlay, clearInputDiagnostics, recordInputDiagnostic } from './input-diagnostics';
 import LiveFriendly from './live-friendly';
 import PassageStudio from './passage-studio';
 import {
@@ -863,6 +864,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           onAuthenticated={authenticated}
         />
       )}
+      <InputDiagnosticOverlay />
     </>
   );
 }
@@ -1387,6 +1389,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
     if (!armed || countdown <= 0) return;
     const timer = window.setTimeout(() => {
       if (countdown === 1) {
+        clearInputDiagnostics();
         if (inputRef.current) {
           if (inputPreference === 'swipe') inputRef.current.value = '';
           else resetRaceInputField(inputRef.current);
@@ -1426,18 +1429,10 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
     if (!field) return;
 
     const handleBeforeInput = (event: InputEvent) => {
+      recordInputDiagnostic('standard:before', event, field);
       const swipeMode = inputPreference === 'swipe';
       if (swipeMode) {
-        const physical = lastPhysicalEdit.current;
-        if (physical
-          && performance.now() - physical.at < 120
-          && physical.inputType === event.inputType
-          && physical.data === event.data) {
-          event.preventDefault();
-          lastPhysicalEdit.current = null;
-          return;
-        }
-        if (!isNativeSwipeInputType(event.inputType)) event.preventDefault();
+        if (!isNativeSwipeInputType(event.inputType) && event.cancelable) event.preventDefault();
         return;
       }
       event.preventDefault();
@@ -1454,6 +1449,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
     };
 
     const handleInput = (event: Event) => {
+      recordInputDiagnostic('standard:after', event, field);
       const swipeMode = inputPreference === 'swipe';
       if (!swipeMode) {
         resetRaceInputField(field);
@@ -1470,26 +1466,33 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      recordInputDiagnostic('standard:key', event, field);
+      if (inputPreference === 'swipe') return;
       const edit = physicalKeyEdit(event.key, event);
       if (!edit) return;
       event.preventDefault();
-      if (inputPreference === 'swipe') field.value = currentInput.current;
-      else resetRaceInputField(field);
+      resetRaceInputField(field);
       lastPhysicalEdit.current = { ...edit, at: performance.now() };
       applyRaceEdit(edit.inputType, edit.data, 'physical');
-      if (inputPreference === 'swipe') {
-        field.value = currentInput.current;
-        field.setSelectionRange(field.value.length, field.value.length);
-      }
+    };
+
+    const handleComposition = (event: CompositionEvent) => {
+      recordInputDiagnostic(`standard:${event.type}`, event, field);
     };
 
     field.addEventListener('beforeinput', handleBeforeInput);
     field.addEventListener('input', handleInput);
     field.addEventListener('keydown', handleKeyDown);
+    field.addEventListener('compositionstart', handleComposition);
+    field.addEventListener('compositionupdate', handleComposition);
+    field.addEventListener('compositionend', handleComposition);
     return () => {
       field.removeEventListener('beforeinput', handleBeforeInput);
       field.removeEventListener('input', handleInput);
       field.removeEventListener('keydown', handleKeyDown);
+      field.removeEventListener('compositionstart', handleComposition);
+      field.removeEventListener('compositionupdate', handleComposition);
+      field.removeEventListener('compositionend', handleComposition);
     };
   }, [applyRaceEdit, applySwipeValue, inputPreference]);
 
@@ -1533,21 +1536,29 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
           </div>
         )}
       </section>
-      <textarea
-        ref={inputRef}
-        className="race-input"
-        defaultValue={inputPreference === 'swipe' ? '' : RACE_INPUT_SENTINEL}
-        onFocus={(event) => { if (inputPreference !== 'swipe') resetRaceInputField(event.currentTarget); }}
-        onPaste={(event) => event.preventDefault()}
-        onDrop={(event) => event.preventDefault()}
-        onBlur={() => { if (active && !finished.current) setTimeout(() => inputRef.current?.focus(), 100); }}
-        autoComplete="off"
-        autoCorrect={inputPreference === 'swipe' ? 'on' : 'off'}
-        autoCapitalize={inputPreference === 'swipe' ? 'sentences' : 'none'}
-        inputMode="text"
-        spellCheck={inputPreference === 'swipe'}
-        aria-label="Race typing input"
-      />
+      <div className={`race-input-shell ${inputPreference === 'swipe' ? 'native-swipe' : ''}`}>
+        {inputPreference === 'swipe' && <label htmlFor="race-typing-input"><b>QUICKPATH INPUT</b><small>Swipe normally here. TypeRival reads each completed keyboard update.</small></label>}
+        <textarea
+          id="race-typing-input"
+          ref={inputRef}
+          className={`race-input ${inputPreference === 'swipe' ? 'race-input-native' : 'race-input-proxy'}`}
+          defaultValue={inputPreference === 'swipe' ? '' : RACE_INPUT_SENTINEL}
+          onFocus={(event) => { if (inputPreference !== 'swipe') resetRaceInputField(event.currentTarget); }}
+          onPaste={(event) => event.preventDefault()}
+          onDrop={(event) => event.preventDefault()}
+          onBlur={() => { if (active && !finished.current) setTimeout(() => inputRef.current?.focus(), 100); }}
+          autoComplete="off"
+          autoCorrect={inputPreference === 'swipe' ? 'on' : 'off'}
+          autoCapitalize={inputPreference === 'swipe' ? 'sentences' : 'none'}
+          inputMode="text"
+          enterKeyHint="done"
+          rows={1}
+          wrap="off"
+          spellCheck={inputPreference === 'swipe'}
+          placeholder={inputPreference === 'swipe' ? 'Swipe the passage here…' : undefined}
+          aria-label="Race typing input"
+        />
+      </div>
     </main>
   );
 }

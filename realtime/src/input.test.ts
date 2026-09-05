@@ -22,6 +22,13 @@ describe('live race input', () => {
     assert.equal(applyLiveEdit('safe', { inputType: 'insertText', data: 'x'.repeat(49), value: `safe${'x'.repeat(49)}` }, 80, true), 'safe');
   });
 
+  it('accepts vendor suggestion events while keeping non-typing shortcuts blocked', () => {
+    assert.equal(applyLiveEdit('The ', { inputType: 'insertFromVendorSuggestion', data: 'coast', value: 'The coast' }, 80, true), 'The coast');
+    assert.equal(applyLiveEdit('The ', { inputType: 'insertFromDrop', data: 'coast', value: 'The coast' }, 80, true), 'The ');
+    assert.equal(applyLiveEdit('The ', { inputType: 'insertFromDictation', data: 'coast', value: 'The coast' }, 80, true), 'The ');
+    assert.equal(applyLiveEdit('The ', { inputType: 'historyUndo', data: null, value: '' }, 80, true), 'The ');
+  });
+
   it('scores the state the server accepted', () => {
     const metrics = liveMetrics('clean line', 'clean line', 60_000, 10);
     assert.equal(metrics.wpm, 2);

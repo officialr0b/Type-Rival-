@@ -1,16 +1,21 @@
 export type LiveEdit = { inputType: string; data: string | null; value?: string };
 
-const nativeSwipeInputTypes = new Set([
-  '',
-  'insertText',
-  'insertCompositionText',
-  'insertFromComposition',
-  'insertReplacementText',
-  'deleteContentBackward',
-  'deleteContentForward',
-  'deleteWordBackward',
-  'deleteWordForward',
+const blockedNativeInputTypes = new Set([
+  'insertFromPaste',
+  'insertFromPasteAsQuotation',
+  'insertFromDrop',
+  'insertFromYank',
+  'insertFromDictation',
+  'deleteByCut',
+  'historyUndo',
+  'historyRedo',
 ]);
+
+function isNativeSwipeInputType(inputType: string) {
+  if (inputType === '') return true;
+  if (blockedNativeInputTypes.has(inputType)) return false;
+  return inputType.startsWith('insert') || inputType.startsWith('delete');
+}
 
 function normalizeInput(value: string) {
   return value
@@ -39,7 +44,7 @@ function reconcileLiveValue(current: string, value: string, maxLength: number) {
 
 export function applyLiveEdit(current: string, edit: LiveEdit, maxLength: number, allowSwipe: boolean) {
   if (allowSwipe && typeof edit.value === 'string') {
-    if (!nativeSwipeInputTypes.has(edit.inputType)) return current;
+    if (!isNativeSwipeInputType(edit.inputType)) return current;
     return reconcileLiveValue(current, edit.value, maxLength);
   }
   if (edit.inputType === 'deleteContentBackward' || edit.inputType === 'deleteWordBackward') {

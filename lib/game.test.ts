@@ -137,7 +137,13 @@ describe('TypeRival scoring', () => {
   it('bounds native swipe changes and keeps paste outside the accepted event set', () => {
     assert.equal(isNativeSwipeInputType('insertCompositionText'), true);
     assert.equal(isNativeSwipeInputType('insertReplacementText'), true);
+    assert.equal(isNativeSwipeInputType('insertFromComposition'), true);
+    assert.equal(isNativeSwipeInputType('deleteWordBackward'), true);
+    assert.equal(isNativeSwipeInputType('insertFromVendorSuggestion'), true);
     assert.equal(isNativeSwipeInputType('insertFromPaste'), false);
+    assert.equal(isNativeSwipeInputType('insertFromDrop'), false);
+    assert.equal(isNativeSwipeInputType('insertFromDictation'), false);
+    assert.equal(isNativeSwipeInputType('historyUndo'), false);
     assert.equal(reconcileTypingValue('safe', `safe${'x'.repeat(49)}`, 100).value, 'safe');
     assert.equal(reconcileTypingValue('cafe', 'café\u200b', 20).value, 'café');
   });

@@ -485,20 +485,21 @@ export type TypingValueEdit = TypingEdit & {
   removedChars: number;
 };
 
-const NATIVE_SWIPE_INPUT_TYPES = new Set([
-  '',
-  'insertText',
-  'insertCompositionText',
-  'insertFromComposition',
-  'insertReplacementText',
-  'deleteContentBackward',
-  'deleteContentForward',
-  'deleteWordBackward',
-  'deleteWordForward',
+const BLOCKED_NATIVE_INPUT_TYPES = new Set([
+  'insertFromPaste',
+  'insertFromPasteAsQuotation',
+  'insertFromDrop',
+  'insertFromYank',
+  'insertFromDictation',
+  'deleteByCut',
+  'historyUndo',
+  'historyRedo',
 ]);
 
 export function isNativeSwipeInputType(inputType: string): boolean {
-  return NATIVE_SWIPE_INPUT_TYPES.has(inputType);
+  if (inputType === '') return true;
+  if (BLOCKED_NATIVE_INPUT_TYPES.has(inputType)) return false;
+  return inputType.startsWith('insert') || inputType.startsWith('delete');
 }
 
 export function reconcileTypingValue(
