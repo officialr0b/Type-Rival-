@@ -17,12 +17,14 @@ import {
   getPassage,
   inputMethodFromTelemetry,
   isCustomPassage,
+  isNativeSwipeInputType,
   isPassageCategory,
   isTypingLanguage,
   passagesForLanguage,
   passagesForSelection,
   physicalKeyEdit,
   rankedPassageForLanguage,
+  reconcileTypingValue,
   type GameMode,
   type InputMethod,
   type InputTelemetry,
@@ -1194,6 +1196,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
   const typingProfile = useRef<TypingProfile>(emptyTypingProfile());
   const inputTelemetry = useRef<InputTelemetry>(emptyInputTelemetry());
   const lastInsertAt = useRef(0);
+  const swipeProfiledLength = useRef(0);
 
   const elapsedMs = durationSec * 1_000 - remainingMs;
   const passageCharacters = useMemo(() => Array.from(passage.text), [passage.text]);
@@ -1235,6 +1238,20 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
   const finish = useCallback((finalInput: string, finalTotal: number, finalElapsed: number) => {
     if (finished.current) return;
     finished.current = true;
+    if (inputPreference === 'swipe') {
+      const finalCharacters = Array.from(finalInput);
+      for (let index = swipeProfiledLength.current; index < finalCharacters.length; index += 1) {
+        const actual = finalCharacters[index] ?? '';
+        const expected = passageCharacters[index] ?? '';
+        if (actual !== expected) {
+          typingProfile.current.firstTryErrors += 1;
+          if (typingProfile.current.mistakes.length < 24) {
+            typingProfile.current.mistakes.push({ expected, actual, index });
+          }
+        }
+      }
+      swipeProfiledLength.current = finalCharacters.length;
+    }
     const telemetry = { ...inputTelemetry.current };
     onComplete({
       passage,
@@ -1247,7 +1264,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
       inputMethod: inputMethodFromTelemetry(browserDeviceClass(), telemetry),
       inputTelemetry: telemetry,
     });
-  }, [mode, onComplete, passage]);
+  }, [inputPreference, mode, onComplete, passage, passageCharacters]);
 
   const applyRaceEdit = useCallback((inputType: string, data: string | null, source: 'physical' | 'virtual') => {
     if (!activeRef.current || finished.current) return;
@@ -1305,16 +1322,81 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
     }
   }, [finish, inputPreference, passage.text, passageCharacters]);
 
+  const applySwipeValue = useCallback((nativeValue: string, inputType: string, isComposing: boolean) => {
+    if (!activeRef.current || finished.current || !isNativeSwipeInputType(inputType)) return;
+
+    const previousInput = currentInput.current;
+    const edit = reconcileTypingValue(previousInput, nativeValue, passage.text.length + 20);
+    if (edit.value === previousInput) return;
+
+    const insertedSpan = Array.from(edit.insertedText).length;
+    if (edit.insertedChars === 1 && insertedSpan === 1) inputTelemetry.current.singleInsertEvents += 1;
+    if (edit.insertedChars > 1 || insertedSpan > 1) inputTelemetry.current.bulkInsertEvents += 1;
+    if (edit.removedChars > 0 || inputType === 'insertReplacementText' || inputType === 'insertCompositionText') {
+      inputTelemetry.current.replacementEvents += 1;
+    }
+
+    if (edit.insertedChars > 0) {
+      const now = performance.now();
+      if (lastInsertAt.current > 0) {
+        const pauseMs = now - lastInsertAt.current;
+        if (pauseMs >= 900) typingProfile.current.pauseCount += 1;
+        if (pauseMs > typingProfile.current.longestPauseMs) {
+          typingProfile.current.longestPauseMs = Math.round(pauseMs);
+          typingProfile.current.longestPauseIndex = edit.changedFrom;
+        }
+      }
+      lastInsertAt.current = now;
+    }
+    if (edit.removedChars > 0) typingProfile.current.corrections += 1;
+
+    const nextCharacters = Array.from(edit.value);
+    if (swipeProfiledLength.current > nextCharacters.length) swipeProfiledLength.current = nextCharacters.length;
+    if (!isComposing) {
+      let stableLength = 0;
+      for (let index = nextCharacters.length - 1; index >= 0; index -= 1) {
+        if (/\s/.test(nextCharacters[index] ?? '')) {
+          stableLength = index + 1;
+          break;
+        }
+      }
+      for (let index = swipeProfiledLength.current; index < stableLength; index += 1) {
+        const actual = nextCharacters[index] ?? '';
+        const expected = passageCharacters[index] ?? '';
+        if (actual !== expected) {
+          typingProfile.current.firstTryErrors += 1;
+          if (typingProfile.current.mistakes.length < 24) {
+            typingProfile.current.mistakes.push({ expected, actual, index });
+          }
+        }
+      }
+      swipeProfiledLength.current = Math.max(swipeProfiledLength.current, stableLength);
+    }
+
+    const nextTotal = currentTotal.current + edit.insertedChars;
+    currentInput.current = edit.value;
+    currentTotal.current = nextTotal;
+    setInput(edit.value);
+    setTotalTypedChars(nextTotal);
+    if (edit.value === passage.text) {
+      finish(edit.value, nextTotal, Date.now() - startedAt.current);
+    }
+  }, [finish, passage.text, passageCharacters]);
+
   useEffect(() => {
     if (!armed || countdown <= 0) return;
     const timer = window.setTimeout(() => {
       if (countdown === 1) {
-        if (inputRef.current) resetRaceInputField(inputRef.current);
+        if (inputRef.current) {
+          if (inputPreference === 'swipe') inputRef.current.value = '';
+          else resetRaceInputField(inputRef.current);
+        }
         currentInput.current = '';
         currentTotal.current = 0;
         typingProfile.current = emptyTypingProfile();
         inputTelemetry.current = emptyInputTelemetry();
         lastInsertAt.current = 0;
+        swipeProfiledLength.current = 0;
         setInput('');
         setTotalTypedChars(0);
         startedAt.current = Date.now();
@@ -1327,7 +1409,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
       }
     }, 850);
     return () => window.clearTimeout(timer);
-  }, [armed, countdown]);
+  }, [armed, countdown, inputPreference]);
 
   useEffect(() => {
     if (!active) return;
@@ -1344,6 +1426,20 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
     if (!field) return;
 
     const handleBeforeInput = (event: InputEvent) => {
+      const swipeMode = inputPreference === 'swipe';
+      if (swipeMode) {
+        const physical = lastPhysicalEdit.current;
+        if (physical
+          && performance.now() - physical.at < 120
+          && physical.inputType === event.inputType
+          && physical.data === event.data) {
+          event.preventDefault();
+          lastPhysicalEdit.current = null;
+          return;
+        }
+        if (!isNativeSwipeInputType(event.inputType)) event.preventDefault();
+        return;
+      }
       event.preventDefault();
       resetRaceInputField(field);
       const physical = lastPhysicalEdit.current;
@@ -1357,22 +1453,45 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
       applyRaceEdit(event.inputType, event.data, 'virtual');
     };
 
+    const handleInput = (event: Event) => {
+      const swipeMode = inputPreference === 'swipe';
+      if (!swipeMode) {
+        resetRaceInputField(field);
+        return;
+      }
+      const inputEvent = event as InputEvent;
+      const inputType = typeof inputEvent.inputType === 'string' ? inputEvent.inputType : '';
+      if (!isNativeSwipeInputType(inputType)) {
+        field.value = currentInput.current;
+        field.setSelectionRange(field.value.length, field.value.length);
+        return;
+      }
+      applySwipeValue(field.value, inputType, inputEvent.isComposing);
+    };
+
     const handleKeyDown = (event: KeyboardEvent) => {
       const edit = physicalKeyEdit(event.key, event);
       if (!edit) return;
       event.preventDefault();
-      resetRaceInputField(field);
+      if (inputPreference === 'swipe') field.value = currentInput.current;
+      else resetRaceInputField(field);
       lastPhysicalEdit.current = { ...edit, at: performance.now() };
       applyRaceEdit(edit.inputType, edit.data, 'physical');
+      if (inputPreference === 'swipe') {
+        field.value = currentInput.current;
+        field.setSelectionRange(field.value.length, field.value.length);
+      }
     };
 
     field.addEventListener('beforeinput', handleBeforeInput);
+    field.addEventListener('input', handleInput);
     field.addEventListener('keydown', handleKeyDown);
     return () => {
       field.removeEventListener('beforeinput', handleBeforeInput);
+      field.removeEventListener('input', handleInput);
       field.removeEventListener('keydown', handleKeyDown);
     };
-  }, [applyRaceEdit]);
+  }, [applyRaceEdit, applySwipeValue, inputPreference]);
 
   const armRace = async () => {
     inputRef.current?.focus();
@@ -1417,17 +1536,16 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
       <textarea
         ref={inputRef}
         className="race-input"
-        defaultValue={RACE_INPUT_SENTINEL}
-        onInput={(event) => { resetRaceInputField(event.currentTarget); }}
-        onFocus={(event) => { resetRaceInputField(event.currentTarget); }}
+        defaultValue={inputPreference === 'swipe' ? '' : RACE_INPUT_SENTINEL}
+        onFocus={(event) => { if (inputPreference !== 'swipe') resetRaceInputField(event.currentTarget); }}
         onPaste={(event) => event.preventDefault()}
         onDrop={(event) => event.preventDefault()}
         onBlur={() => { if (active && !finished.current) setTimeout(() => inputRef.current?.focus(), 100); }}
         autoComplete="off"
         autoCorrect={inputPreference === 'swipe' ? 'on' : 'off'}
-        autoCapitalize="none"
+        autoCapitalize={inputPreference === 'swipe' ? 'sentences' : 'none'}
         inputMode="text"
-        spellCheck={false}
+        spellCheck={inputPreference === 'swipe'}
         aria-label="Race typing input"
       />
     </main>

@@ -112,7 +112,7 @@ export function inputMethodFromTelemetry(
   telemetry: InputTelemetry,
 ): InputMethod {
   if (deviceClass === 'desktop' || telemetry.physicalKeyEvents > 0) return 'hardware';
-  if (telemetry.bulkInsertEvents > 0) return 'mobile_swipe';
+  if (telemetry.bulkInsertEvents > 0 || telemetry.replacementEvents > 0) return 'mobile_swipe';
   return 'mobile_touch';
 }
 
@@ -478,6 +478,80 @@ export type TypingEdit = {
   value: string;
   insertedChars: number;
 };
+
+export type TypingValueEdit = TypingEdit & {
+  changedFrom: number;
+  insertedText: string;
+  removedChars: number;
+};
+
+const NATIVE_SWIPE_INPUT_TYPES = new Set([
+  '',
+  'insertText',
+  'insertCompositionText',
+  'insertFromComposition',
+  'insertReplacementText',
+  'deleteContentBackward',
+  'deleteContentForward',
+  'deleteWordBackward',
+  'deleteWordForward',
+]);
+
+export function isNativeSwipeInputType(inputType: string): boolean {
+  return NATIVE_SWIPE_INPUT_TYPES.has(inputType);
+}
+
+export function reconcileTypingValue(
+  current: string,
+  nativeValue: string,
+  maxLength: number,
+  maxChangedChars = 48,
+): TypingValueEdit {
+  const currentCharacters = Array.from(normalizeTypingInput(current));
+  const nextCharacters = Array.from(
+    normalizeTypingInput(nativeValue)
+      .replace(/[\r\n\u200b]/g, ''),
+  ).slice(0, maxLength);
+
+  let prefixLength = 0;
+  while (
+    prefixLength < currentCharacters.length
+    && prefixLength < nextCharacters.length
+    && currentCharacters[prefixLength] === nextCharacters[prefixLength]
+  ) {
+    prefixLength += 1;
+  }
+
+  let suffixLength = 0;
+  while (
+    suffixLength < currentCharacters.length - prefixLength
+    && suffixLength < nextCharacters.length - prefixLength
+    && currentCharacters[currentCharacters.length - 1 - suffixLength]
+      === nextCharacters[nextCharacters.length - 1 - suffixLength]
+  ) {
+    suffixLength += 1;
+  }
+
+  const removedChars = currentCharacters.length - prefixLength - suffixLength;
+  const insertedCharacters = nextCharacters.slice(prefixLength, nextCharacters.length - suffixLength);
+  if (Math.max(removedChars, insertedCharacters.length) > maxChangedChars) {
+    return {
+      value: current,
+      insertedChars: 0,
+      changedFrom: currentCharacters.length,
+      insertedText: '',
+      removedChars: 0,
+    };
+  }
+
+  return {
+    value: nextCharacters.join(''),
+    insertedChars: Math.max(0, nextCharacters.length - currentCharacters.length),
+    changedFrom: prefixLength,
+    insertedText: insertedCharacters.join(''),
+    removedChars,
+  };
+}
 
 export function applyTypingEdit(
   current: string,

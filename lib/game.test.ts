@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { PASSAGES, PASSAGE_CATEGORIES, SUPPORTED_LANGUAGES, applyTypingEdit, calculateMetrics, choosePassage, decideWinner, detectDeviceClass, emptyInputTelemetry, getPassage, inputMethodFromTelemetry, isCustomPassage, normalizeTypingInput, passagesForLanguage, passagesForSelection, physicalKeyEdit, rankedPassageForLanguage, xpForMode } from './game.ts';
+import { PASSAGES, PASSAGE_CATEGORIES, SUPPORTED_LANGUAGES, applyTypingEdit, calculateMetrics, choosePassage, decideWinner, detectDeviceClass, emptyInputTelemetry, getPassage, inputMethodFromTelemetry, isCustomPassage, isNativeSwipeInputType, normalizeTypingInput, passagesForLanguage, passagesForSelection, physicalKeyEdit, rankedPassageForLanguage, reconcileTypingValue, xpForMode } from './game.ts';
 import { updateGlicko2 } from './glicko2.ts';
 
 describe('TypeRival scoring', () => {
@@ -106,10 +106,47 @@ describe('TypeRival scoring', () => {
     assert.deepEqual(applyTypingEdit('The ', 'insertText', 'coast', 7, true, 48), { value: 'The coa', insertedChars: 3 });
   });
 
+  it('reconciles iPhone QuickPath candidate replacements instead of appending them', () => {
+    const firstCandidate = reconcileTypingValue('', 'Improving', 80);
+    assert.deepEqual(firstCandidate, {
+      value: 'Improving',
+      insertedChars: 9,
+      changedFrom: 0,
+      insertedText: 'Improving',
+      removedChars: 0,
+    });
+    const finalCandidate = reconcileTypingValue(firstCandidate.value, 'Improvement ', 80);
+    assert.deepEqual(finalCandidate, {
+      value: 'Improvement ',
+      insertedChars: 3,
+      changedFrom: 6,
+      insertedText: 'ement ',
+      removedChars: 3,
+    });
+  });
+
+  it('keeps a full mobile composition sequence aligned with the native field', () => {
+    let value = '';
+    for (const candidate of ['t', 'th', 'the', 'The ', 'The coast', 'The coast ']) {
+      value = reconcileTypingValue(value, candidate, 80).value;
+    }
+    assert.equal(value, 'The coast ');
+    assert.equal(value.includes('tththe'), false);
+  });
+
+  it('bounds native swipe changes and keeps paste outside the accepted event set', () => {
+    assert.equal(isNativeSwipeInputType('insertCompositionText'), true);
+    assert.equal(isNativeSwipeInputType('insertReplacementText'), true);
+    assert.equal(isNativeSwipeInputType('insertFromPaste'), false);
+    assert.equal(reconcileTypingValue('safe', `safe${'x'.repeat(49)}`, 100).value, 'safe');
+    assert.equal(reconcileTypingValue('cafe', 'café\u200b', 20).value, 'café');
+  });
+
   it('classifies ranked input from observed events instead of a claimed label', () => {
     assert.equal(inputMethodFromTelemetry('desktop', emptyInputTelemetry()), 'hardware');
     assert.equal(inputMethodFromTelemetry('mobile', { ...emptyInputTelemetry(), singleInsertEvents: 20 }), 'mobile_touch');
     assert.equal(inputMethodFromTelemetry('mobile', { ...emptyInputTelemetry(), bulkInsertEvents: 2 }), 'mobile_swipe');
+    assert.equal(inputMethodFromTelemetry('mobile', { ...emptyInputTelemetry(), replacementEvents: 1 }), 'mobile_swipe');
     assert.equal(inputMethodFromTelemetry('mobile', { ...emptyInputTelemetry(), physicalKeyEvents: 1, bulkInsertEvents: 2 }), 'hardware');
   });
 

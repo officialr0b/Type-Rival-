@@ -3,7 +3,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Room } from '@colyseus/sdk';
 import { getSupabaseBrowserClient } from '../lib/supabase-browser';
-import { physicalKeyEdit, type MobileInputPreference } from '../lib/game';
+import {
+  applyTypingEdit,
+  isNativeSwipeInputType,
+  physicalKeyEdit,
+  reconcileTypingValue,
+  type MobileInputPreference,
+} from '../lib/game';
 
 type LivePlayer = {
   userId: string;
@@ -53,6 +59,7 @@ export default function LiveFriendly({ initialRoomId, inputPreference, ageBand, 
   const [now, setNow] = useState(0);
   const roomRef = useRef<Room | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const currentNativeInput = useRef('');
   const lastPhysicalEdit = useRef<{ inputType: string; data: string | null; at: number } | null>(null);
   const attemptedInitialRoom = useRef(false);
 
@@ -138,8 +145,21 @@ export default function LiveFriendly({ initialRoomId, inputPreference, ageBand, 
   useEffect(() => {
     const field = inputRef.current;
     if (!field || snapshot?.phase !== 'racing') return;
+    currentNativeInput.current = '';
+    if (inputPreference === 'swipe') field.value = currentNativeInput.current;
+    else resetInput(field);
     field.focus();
     const beforeInput = (event: InputEvent) => {
+      if (inputPreference === 'swipe') {
+        const physical = lastPhysicalEdit.current;
+        if (physical && performance.now() - physical.at < 120 && physical.inputType === event.inputType && physical.data === event.data) {
+          event.preventDefault();
+          lastPhysicalEdit.current = null;
+          return;
+        }
+        if (!isNativeSwipeInputType(event.inputType)) event.preventDefault();
+        return;
+      }
       event.preventDefault();
       resetInput(field);
       const physical = lastPhysicalEdit.current;
@@ -149,21 +169,51 @@ export default function LiveFriendly({ initialRoomId, inputPreference, ageBand, 
       }
       roomRef.current?.send('edit', { inputType: event.inputType, data: event.data });
     };
+    const input = (event: Event) => {
+      if (inputPreference !== 'swipe') {
+        resetInput(field);
+        return;
+      }
+      const inputEvent = event as InputEvent;
+      const inputType = typeof inputEvent.inputType === 'string' ? inputEvent.inputType : '';
+      if (!isNativeSwipeInputType(inputType)) {
+        field.value = currentNativeInput.current;
+        field.setSelectionRange(field.value.length, field.value.length);
+        return;
+      }
+      const edit = reconcileTypingValue(currentNativeInput.current, field.value, (snapshot?.passage.length ?? 0) + 20);
+      if (edit.value === currentNativeInput.current) return;
+      currentNativeInput.current = edit.value;
+      roomRef.current?.send('edit', { inputType, data: inputEvent.data, value: edit.value });
+    };
     const keyDown = (event: KeyboardEvent) => {
       const edit = physicalKeyEdit(event.key, event);
       if (!edit) return;
       event.preventDefault();
-      resetInput(field);
+      if (inputPreference === 'swipe') {
+        currentNativeInput.current = applyTypingEdit(
+          currentNativeInput.current,
+          edit.inputType,
+          edit.data,
+          (snapshot?.passage.length ?? 0) + 20,
+        ).value;
+        field.value = currentNativeInput.current;
+        field.setSelectionRange(field.value.length, field.value.length);
+      } else {
+        resetInput(field);
+      }
       lastPhysicalEdit.current = { ...edit, at: performance.now() };
       roomRef.current?.send('edit', edit);
     };
     field.addEventListener('beforeinput', beforeInput);
+    field.addEventListener('input', input);
     field.addEventListener('keydown', keyDown);
     return () => {
       field.removeEventListener('beforeinput', beforeInput);
+      field.removeEventListener('input', input);
       field.removeEventListener('keydown', keyDown);
     };
-  }, [snapshot?.phase]);
+  }, [inputPreference, snapshot?.passage, snapshot?.phase]);
 
   const shareRoom = async () => {
     const url = `${window.location.origin}/?live=${encodeURIComponent(roomId)}`;
@@ -204,7 +254,7 @@ export default function LiveFriendly({ initialRoomId, inputPreference, ageBand, 
       {(snapshot?.phase === 'racing' || snapshot?.phase === 'finished') && <div className="passage-wrap"><p>{Array.from(snapshot.passage).map((character, index) => { const actual = Array.from(localPlayer?.input ?? ''); const state = index >= actual.length ? 'pending' : actual[index] === character ? 'correct' : 'incorrect'; return <span key={index} className={`${state} ${index === actual.length ? 'current' : ''}`}>{character}</span>; })}</p><div className="progress-track"><span style={{ width: `${localPlayer?.progress ?? 0}%` }} /></div></div>}
       {snapshot?.phase === 'finished' && <div className="live-finish"><span>{localPlayer?.outcome?.toUpperCase()}</span><b>{Math.round(localPlayer?.wpm ?? 0)} WPM</b><small>Live Alpha results are session-only while we validate stability and fairness.</small></div>}
     </section>
-    <textarea ref={inputRef} className="race-input" defaultValue={LIVE_SENTINEL} onInput={(event) => resetInput(event.currentTarget)} onFocus={(event) => resetInput(event.currentTarget)} onPaste={(event) => event.preventDefault()} onDrop={(event) => event.preventDefault()} autoComplete="off" autoCorrect={inputPreference === 'swipe' ? 'on' : 'off'} autoCapitalize="none" inputMode="text" spellCheck={false} aria-label="Live race typing input" />
+    <textarea ref={inputRef} className="race-input" defaultValue={inputPreference === 'swipe' ? '' : LIVE_SENTINEL} onFocus={(event) => { if (inputPreference !== 'swipe') resetInput(event.currentTarget); }} onPaste={(event) => event.preventDefault()} onDrop={(event) => event.preventDefault()} autoComplete="off" autoCorrect={inputPreference === 'swipe' ? 'on' : 'off'} autoCapitalize={inputPreference === 'swipe' ? 'sentences' : 'none'} inputMode="text" spellCheck={inputPreference === 'swipe'} aria-label="Live race typing input" />
     {status && <div className="toast" role="status">{status}</div>}
   </main>;
 }
