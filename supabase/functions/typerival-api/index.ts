@@ -194,13 +194,19 @@ async function bootstrap(url: URL, user: User | null) {
     }
   }
   const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000).toISOString();
-  const [boardQuery, touchRankedQuery, swipeRankedQuery, hardwareRankedQuery] = await Promise.all([
+  const [boardQuery, touchOpenQuery, swipeOpenQuery, hardwareOpenQuery, touchRankedQuery, swipeRankedQuery, hardwareRankedQuery] = await Promise.all([
     admin.rpc('tr_get_leaderboard', { p_cutoff: cutoff, p_language: language, p_limit: 10 }),
+    admin.rpc('tr_get_leaderboard', { p_cutoff: cutoff, p_input_method: 'mobile_touch', p_language: language, p_limit: 10 }),
+    admin.rpc('tr_get_leaderboard', { p_cutoff: cutoff, p_input_method: 'mobile_swipe', p_language: language, p_limit: 10 }),
+    admin.rpc('tr_get_leaderboard', { p_cutoff: cutoff, p_input_method: 'hardware', p_language: language, p_limit: 10 }),
     admin.rpc('tr_get_ranked_leaderboard', { p_cutoff: cutoff, p_device_class: 'mobile', p_input_method: 'mobile_touch', p_language: language, p_limit: 10 }),
     admin.rpc('tr_get_ranked_leaderboard', { p_cutoff: cutoff, p_device_class: 'mobile', p_input_method: 'mobile_swipe', p_language: language, p_limit: 10 }),
     admin.rpc('tr_get_ranked_leaderboard', { p_cutoff: cutoff, p_device_class: 'desktop', p_input_method: 'hardware', p_language: language, p_limit: 10 }),
   ]);
   if (boardQuery.error) throw new ServiceError('bootstrap:leaderboard', boardQuery.error);
+  if (touchOpenQuery.error) throw new ServiceError('bootstrap:open_touch', touchOpenQuery.error);
+  if (swipeOpenQuery.error) throw new ServiceError('bootstrap:open_swipe', swipeOpenQuery.error);
+  if (hardwareOpenQuery.error) throw new ServiceError('bootstrap:open_hardware', hardwareOpenQuery.error);
   if (touchRankedQuery.error) throw new ServiceError('bootstrap:ranked_touch', touchRankedQuery.error);
   if (swipeRankedQuery.error) throw new ServiceError('bootstrap:ranked_swipe', swipeRankedQuery.error);
   if (hardwareRankedQuery.error) throw new ServiceError('bootstrap:ranked_hardware', hardwareRankedQuery.error);
@@ -212,6 +218,11 @@ async function bootstrap(url: URL, user: User | null) {
     rating: Number(entry.rating),
   }));
   const leaderboard = mapLeaderboard((boardQuery.data ?? []) as Record<string, unknown>[]);
+  const openLeaderboards = {
+    mobile_touch: mapLeaderboard((touchOpenQuery.data ?? []) as Record<string, unknown>[]),
+    mobile_swipe: mapLeaderboard((swipeOpenQuery.data ?? []) as Record<string, unknown>[]),
+    hardware: mapLeaderboard((hardwareOpenQuery.data ?? []) as Record<string, unknown>[]),
+  };
   const mobileTouch = mapLeaderboard((touchRankedQuery.data ?? []) as Record<string, unknown>[]);
   const mobileSwipe = mapLeaderboard((swipeRankedQuery.data ?? []) as Record<string, unknown>[]);
   const hardware = mapLeaderboard((hardwareRankedQuery.data ?? []) as Record<string, unknown>[]);
@@ -271,7 +282,9 @@ async function bootstrap(url: URL, user: User | null) {
       doubleXpUntil: player.double_xp_until,
     } : { signedIn: false },
     stats,
+    // Retain the combined list while older web deployments age out.
     leaderboard,
+    openLeaderboards,
     rankedLeaderboards,
     latestRanked,
     coachingHistory,

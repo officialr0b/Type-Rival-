@@ -79,6 +79,7 @@ type Bootstrap = {
   user: Player;
   stats: { sessions: number; averageWpm: number; bestWpm: number; accuracy: number; activeDays: number };
   leaderboard: LeaderboardEntry[];
+  openLeaderboards: Record<InputMethod, LeaderboardEntry[]>;
   rankedLeaderboards: Record<InputMethod, LeaderboardEntry[]>;
   latestRanked: { matchStatus: string; outcome?: string; ratingDelta?: number } | null;
   coachingHistory: CoachingRun[];
@@ -203,6 +204,7 @@ const defaultBootstrap: Bootstrap = {
   user: { signedIn: false },
   stats: emptyStats,
   leaderboard: [],
+  openLeaderboards: { mobile_touch: [], mobile_swipe: [], hardware: [] },
   rankedLeaderboards: { mobile_touch: [], mobile_swipe: [], hardware: [] },
   latestRanked: null,
   coachingHistory: [],
@@ -249,6 +251,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
       const response = await authFetch(`/api/bootstrap?${query.toString()}`, { cache: 'no-store' });
       if (!response.ok) throw new Error('profile unavailable');
       const loaded = await response.json() as Bootstrap & {
+        openLeaderboards?: Partial<Record<InputMethod, LeaderboardEntry[]>>;
         rankedLeaderboards?: Partial<Record<InputMethod, LeaderboardEntry[]>> & {
           mobile?: LeaderboardEntry[];
           desktop?: LeaderboardEntry[];
@@ -256,6 +259,12 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
       };
       setBootstrap({
         ...loaded,
+        leaderboard: loaded.leaderboard ?? [],
+        openLeaderboards: {
+          mobile_touch: loaded.openLeaderboards?.mobile_touch ?? [],
+          mobile_swipe: loaded.openLeaderboards?.mobile_swipe ?? [],
+          hardware: loaded.openLeaderboards?.hardware ?? [],
+        },
         rankedLeaderboards: {
           mobile_touch: loaded.rankedLeaderboards?.mobile_touch ?? loaded.rankedLeaderboards?.mobile ?? [],
           mobile_swipe: loaded.rankedLeaderboards?.mobile_swipe ?? [],
@@ -1728,11 +1737,13 @@ function Leaderboard({ data, language, onLanguage, onBack }: {
   onBack: () => void;
 }) {
   const [board, setBoard] = useState<'open' | 'ranked'>('open');
-  const [rankedInput, setRankedInput] = useState<InputMethod>('mobile_touch');
-  const entries = board === 'open' ? data.leaderboard : data.rankedLeaderboards[rankedInput] ?? [];
+  const [inputMethod, setInputMethod] = useState<InputMethod>('mobile_touch');
+  const entries = board === 'open'
+    ? data.openLeaderboards[inputMethod] ?? []
+    : data.rankedLeaderboards[inputMethod] ?? [];
   const title = board === 'open' ? 'Open leaderboard' : 'Ranked leaderboard';
   const description = board === 'open'
-    ? 'You can hit the leaderboard as soon as your first run is complete. Clear, signed-in results count toward your rolling 30-day averages.'
+    ? 'You can hit the leaderboard as soon as your first run is complete. Clear, signed-in results count toward your rolling 30-day averages in the matching input lane.'
     : '45-second ranked runs only. Tap, swipe, and hardware input each have a fair lane.';
 
   return (
@@ -1743,15 +1754,13 @@ function Leaderboard({ data, language, onLanguage, onBack }: {
         <button className={board === 'open' ? 'selected' : ''} aria-pressed={board === 'open'} onClick={() => setBoard('open')}>OPEN</button>
         <button className={board === 'ranked' ? 'selected' : ''} aria-pressed={board === 'ranked'} onClick={() => setBoard('ranked')}>RANKED</button>
       </nav>
-      {board === 'ranked' && <>
-        <nav className="leaderboard-subtabs" aria-label="Ranked input method">
-          <button className={rankedInput === 'mobile_touch' ? 'selected' : ''} aria-pressed={rankedInput === 'mobile_touch'} onClick={() => setRankedInput('mobile_touch')}>MOBILE TOUCH</button>
-          <button className={rankedInput === 'mobile_swipe' ? 'selected' : ''} aria-pressed={rankedInput === 'mobile_swipe'} onClick={() => setRankedInput('mobile_swipe')}>MOBILE SWIPE</button>
-          <button className={rankedInput === 'hardware' ? 'selected' : ''} aria-pressed={rankedInput === 'hardware'} onClick={() => setRankedInput('hardware')}>DESKTOP / HARDWARE</button>
-        </nav>
-        <p className="leaderboard-note">TypeRival classifies the input actually observed during each run. Connected iPad and tablet keyboards join the hardware lane. Rating remains unified during the async Ranked beta.</p>
-      </>}
-      <LeaderboardTable entries={entries} emptyLabel={board === 'open' ? 'Complete a signed-in run to claim the first spot.' : `Complete a ${inputMethodLabel(rankedInput).toLowerCase()} Ranked run to claim the first spot.`} />
+      <nav className="leaderboard-subtabs" aria-label={`${title} input method`}>
+        <button className={inputMethod === 'mobile_touch' ? 'selected' : ''} aria-pressed={inputMethod === 'mobile_touch'} onClick={() => setInputMethod('mobile_touch')}>MOBILE TOUCH</button>
+        <button className={inputMethod === 'mobile_swipe' ? 'selected' : ''} aria-pressed={inputMethod === 'mobile_swipe'} onClick={() => setInputMethod('mobile_swipe')}>MOBILE SWIPE</button>
+        <button className={inputMethod === 'hardware' ? 'selected' : ''} aria-pressed={inputMethod === 'hardware'} onClick={() => setInputMethod('hardware')}>DESKTOP / HARDWARE</button>
+      </nav>
+      <p className="leaderboard-note">TypeRival classifies the input actually observed during each run. Connected iPad and tablet keyboards join the hardware lane.{board === 'ranked' ? ' Rating remains unified during the async Ranked beta.' : ''}</p>
+      <LeaderboardTable entries={entries} emptyLabel={`Complete a signed-in ${inputMethodLabel(inputMethod).toLowerCase()} ${board === 'ranked' ? 'Ranked ' : ''}run to claim the first spot.`} />
     </main>
   );
 }
