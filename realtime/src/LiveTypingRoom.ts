@@ -94,6 +94,7 @@ export class LiveTypingRoom extends Room<{ state: LiveRaceState }> {
   private acceptEdit(client: Client, edit: LiveEdit) {
     if (this.state.phase !== 'racing' || !edit || typeof edit.inputType !== 'string') return;
     if (edit.data !== null && typeof edit.data !== 'string') return;
+    if (edit.value !== undefined && typeof edit.value !== 'string') return;
     const player = this.state.players.get(client.sessionId);
     if (!player || player.finished) return;
     const previous = player.input;
