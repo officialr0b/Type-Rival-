@@ -39,6 +39,15 @@ function resetInput(field: HTMLTextAreaElement) {
   field.setSelectionRange(LIVE_SENTINEL.length, LIVE_SENTINEL.length);
 }
 
+function focusRaceInput(field: HTMLTextAreaElement | null) {
+  if (!field) return;
+  try {
+    field.focus({ preventScroll: true });
+  } catch {
+    field.focus();
+  }
+}
+
 export default function LiveFriendly({ initialRoomId, inputPreference, ageBand, signedIn, onInputPreference, onBack, onSignIn }: {
   initialRoomId: string;
   inputPreference: MobileInputPreference;
@@ -148,7 +157,7 @@ export default function LiveFriendly({ initialRoomId, inputPreference, ageBand, 
     currentNativeInput.current = '';
     if (inputPreference === 'swipe') field.value = currentNativeInput.current;
     else resetInput(field);
-    field.focus();
+    focusRaceInput(field);
     const beforeInput = (event: InputEvent) => {
       recordInputDiagnostic('live:before', event, field);
       if (inputPreference === 'swipe') {
@@ -238,7 +247,7 @@ export default function LiveFriendly({ initialRoomId, inputPreference, ageBand, 
     </main>;
   }
 
-  return <main className="live-race game-page" onClick={() => inputRef.current?.focus()}>
+  return <main className="live-race game-page" onClick={() => focusRaceInput(inputRef.current)}>
     <header className="race-top"><button onClick={() => { void roomRef.current?.leave(true); onBack(); }}>✕ EXIT</button><span>LIVE FRIENDLY · {roomId}</span><small>COLYSEUS ALPHA</small></header>
     <section className="live-player-strip">{players.map(([id, player]) => <article key={id} className={id === sessionId ? 'you' : ''}><span>{id === sessionId ? 'YOU' : 'RIVAL'}</span><b>{player.handle}</b><strong>{Math.round(player.wpm)} WPM</strong><div><i style={{ width: `${player.progress}%` }} /></div></article>)}</section>
     <section className="race-hud"><RaceValue value={Math.round(localPlayer?.wpm ?? 0)} label="NET WPM" /><RaceValue value={`${(localPlayer?.accuracy ?? 100).toFixed(1)}%`} label="ACCURACY" /><div className="race-clock"><b>{snapshot?.phase === 'racing' ? Math.ceil(remaining / 1_000) : 45}</b><small>SECONDS</small></div><RaceValue value={localPlayer?.errors ?? 0} label="ERRORS" /><RaceValue value={`${Math.round(localPlayer?.progress ?? 0)}%`} label="PROGRESS" /></section>
@@ -249,8 +258,7 @@ export default function LiveFriendly({ initialRoomId, inputPreference, ageBand, 
       {snapshot?.phase === 'finished' && <div className="live-finish"><span>{localPlayer?.outcome?.toUpperCase()}</span><b>{Math.round(localPlayer?.wpm ?? 0)} WPM</b><small>Live Alpha results are session-only while we validate stability and fairness.</small></div>}
     </section>
     <div className={`race-input-shell ${inputPreference === 'swipe' ? 'native-swipe' : ''}`}>
-      {inputPreference === 'swipe' && <label htmlFor="live-race-typing-input"><b>QUICKPATH INPUT</b><small>Swipe normally here. TypeRival reads each completed keyboard update.</small></label>}
-      <textarea id="live-race-typing-input" ref={inputRef} className={`race-input ${inputPreference === 'swipe' ? 'race-input-native' : 'race-input-proxy'}`} defaultValue={inputPreference === 'swipe' ? '' : LIVE_SENTINEL} onFocus={(event) => { if (inputPreference !== 'swipe') resetInput(event.currentTarget); }} onPaste={(event) => event.preventDefault()} onDrop={(event) => event.preventDefault()} autoComplete="off" autoCorrect={inputPreference === 'swipe' ? 'on' : 'off'} autoCapitalize={inputPreference === 'swipe' ? 'sentences' : 'none'} inputMode="text" enterKeyHint="done" rows={1} wrap="off" spellCheck={inputPreference === 'swipe'} placeholder={inputPreference === 'swipe' ? 'Swipe the passage here…' : undefined} aria-label="Live race typing input" />
+      <textarea id="live-race-typing-input" ref={inputRef} className={`race-input ${inputPreference === 'swipe' ? 'race-input-native' : 'race-input-proxy'}`} defaultValue={inputPreference === 'swipe' ? '' : LIVE_SENTINEL} onFocus={(event) => { if (inputPreference !== 'swipe') resetInput(event.currentTarget); }} onPaste={(event) => event.preventDefault()} onDrop={(event) => event.preventDefault()} autoComplete="off" autoCorrect={inputPreference === 'swipe' ? 'on' : 'off'} autoCapitalize={inputPreference === 'swipe' ? 'sentences' : 'none'} inputMode="text" enterKeyHint="done" rows={1} wrap="off" spellCheck={inputPreference === 'swipe'} aria-label="Live race typing input" />
     </div>
     {status && <div className="toast" role="status">{status}</div>}
   </main>;
