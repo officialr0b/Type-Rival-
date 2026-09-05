@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Room } from '@colyseus/sdk';
 import { getSupabaseBrowserClient } from '../lib/supabase-browser';
+import { recordInputDiagnostic } from './input-diagnostics';
 import {
-  applyTypingEdit,
   isNativeSwipeInputType,
   physicalKeyEdit,
   reconcileTypingValue,
@@ -150,14 +150,9 @@ export default function LiveFriendly({ initialRoomId, inputPreference, ageBand, 
     else resetInput(field);
     field.focus();
     const beforeInput = (event: InputEvent) => {
+      recordInputDiagnostic('live:before', event, field);
       if (inputPreference === 'swipe') {
-        const physical = lastPhysicalEdit.current;
-        if (physical && performance.now() - physical.at < 120 && physical.inputType === event.inputType && physical.data === event.data) {
-          event.preventDefault();
-          lastPhysicalEdit.current = null;
-          return;
-        }
-        if (!isNativeSwipeInputType(event.inputType)) event.preventDefault();
+        if (!isNativeSwipeInputType(event.inputType) && event.cancelable) event.preventDefault();
         return;
       }
       event.preventDefault();
@@ -170,6 +165,7 @@ export default function LiveFriendly({ initialRoomId, inputPreference, ageBand, 
       roomRef.current?.send('edit', { inputType: event.inputType, data: event.data });
     };
     const input = (event: Event) => {
+      recordInputDiagnostic('live:after', event, field);
       if (inputPreference !== 'swipe') {
         resetInput(field);
         return;
@@ -187,31 +183,29 @@ export default function LiveFriendly({ initialRoomId, inputPreference, ageBand, 
       roomRef.current?.send('edit', { inputType, data: inputEvent.data, value: edit.value });
     };
     const keyDown = (event: KeyboardEvent) => {
+      recordInputDiagnostic('live:key', event, field);
+      if (inputPreference === 'swipe') return;
       const edit = physicalKeyEdit(event.key, event);
       if (!edit) return;
       event.preventDefault();
-      if (inputPreference === 'swipe') {
-        currentNativeInput.current = applyTypingEdit(
-          currentNativeInput.current,
-          edit.inputType,
-          edit.data,
-          (snapshot?.passage.length ?? 0) + 20,
-        ).value;
-        field.value = currentNativeInput.current;
-        field.setSelectionRange(field.value.length, field.value.length);
-      } else {
-        resetInput(field);
-      }
+      resetInput(field);
       lastPhysicalEdit.current = { ...edit, at: performance.now() };
       roomRef.current?.send('edit', edit);
     };
+    const composition = (event: CompositionEvent) => recordInputDiagnostic(`live:${event.type}`, event, field);
     field.addEventListener('beforeinput', beforeInput);
     field.addEventListener('input', input);
     field.addEventListener('keydown', keyDown);
+    field.addEventListener('compositionstart', composition);
+    field.addEventListener('compositionupdate', composition);
+    field.addEventListener('compositionend', composition);
     return () => {
       field.removeEventListener('beforeinput', beforeInput);
       field.removeEventListener('input', input);
       field.removeEventListener('keydown', keyDown);
+      field.removeEventListener('compositionstart', composition);
+      field.removeEventListener('compositionupdate', composition);
+      field.removeEventListener('compositionend', composition);
     };
   }, [inputPreference, snapshot?.passage, snapshot?.phase]);
 
@@ -254,7 +248,10 @@ export default function LiveFriendly({ initialRoomId, inputPreference, ageBand, 
       {(snapshot?.phase === 'racing' || snapshot?.phase === 'finished') && <div className="passage-wrap"><p>{Array.from(snapshot.passage).map((character, index) => { const actual = Array.from(localPlayer?.input ?? ''); const state = index >= actual.length ? 'pending' : actual[index] === character ? 'correct' : 'incorrect'; return <span key={index} className={`${state} ${index === actual.length ? 'current' : ''}`}>{character}</span>; })}</p><div className="progress-track"><span style={{ width: `${localPlayer?.progress ?? 0}%` }} /></div></div>}
       {snapshot?.phase === 'finished' && <div className="live-finish"><span>{localPlayer?.outcome?.toUpperCase()}</span><b>{Math.round(localPlayer?.wpm ?? 0)} WPM</b><small>Live Alpha results are session-only while we validate stability and fairness.</small></div>}
     </section>
-    <textarea ref={inputRef} className="race-input" defaultValue={inputPreference === 'swipe' ? '' : LIVE_SENTINEL} onFocus={(event) => { if (inputPreference !== 'swipe') resetInput(event.currentTarget); }} onPaste={(event) => event.preventDefault()} onDrop={(event) => event.preventDefault()} autoComplete="off" autoCorrect={inputPreference === 'swipe' ? 'on' : 'off'} autoCapitalize={inputPreference === 'swipe' ? 'sentences' : 'none'} inputMode="text" spellCheck={inputPreference === 'swipe'} aria-label="Live race typing input" />
+    <div className={`race-input-shell ${inputPreference === 'swipe' ? 'native-swipe' : ''}`}>
+      {inputPreference === 'swipe' && <label htmlFor="live-race-typing-input"><b>QUICKPATH INPUT</b><small>Swipe normally here. TypeRival reads each completed keyboard update.</small></label>}
+      <textarea id="live-race-typing-input" ref={inputRef} className={`race-input ${inputPreference === 'swipe' ? 'race-input-native' : 'race-input-proxy'}`} defaultValue={inputPreference === 'swipe' ? '' : LIVE_SENTINEL} onFocus={(event) => { if (inputPreference !== 'swipe') resetInput(event.currentTarget); }} onPaste={(event) => event.preventDefault()} onDrop={(event) => event.preventDefault()} autoComplete="off" autoCorrect={inputPreference === 'swipe' ? 'on' : 'off'} autoCapitalize={inputPreference === 'swipe' ? 'sentences' : 'none'} inputMode="text" enterKeyHint="done" rows={1} wrap="off" spellCheck={inputPreference === 'swipe'} placeholder={inputPreference === 'swipe' ? 'Swipe the passage here…' : undefined} aria-label="Live race typing input" />
+    </div>
     {status && <div className="toast" role="status">{status}</div>}
   </main>;
 }
