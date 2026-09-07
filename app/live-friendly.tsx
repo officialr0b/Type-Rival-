@@ -48,9 +48,10 @@ function focusRaceInput(field: HTMLTextAreaElement | null) {
   }
 }
 
-export default function LiveFriendly({ initialRoomId, inputPreference, ageBand, signedIn, onInputPreference, onBack, onSignIn }: {
+export default function LiveFriendly({ initialRoomId, inputPreference, mobileViewer, ageBand, signedIn, onInputPreference, onBack, onSignIn }: {
   initialRoomId: string;
   inputPreference: MobileInputPreference;
+  mobileViewer: boolean;
   ageBand: 'under13' | 'teen' | 'adult' | null;
   signedIn: boolean;
   onInputPreference: (preference: MobileInputPreference) => void;
@@ -237,7 +238,7 @@ export default function LiveFriendly({ initialRoomId, inputPreference, ageBand, 
       <section className="live-lobby">
         <div><span className="eyebrow">COLYSEUS · LIVE FRIENDLY ALPHA</span><h1>Same clock. Same moment.</h1><p>Create a private 45-second room or enter the code a rival sent you. Alpha races do not change rating or XP yet.</p></div>
         <div className="live-connect-card">
-          <div className="input-method-control"><span><small>INPUT STYLE</small><b>Choose your style before joining.</b></span><div role="group" aria-label="Live input method"><button className={inputPreference === 'tap' ? 'selected' : ''} aria-pressed={inputPreference === 'tap'} onClick={() => onInputPreference('tap')}><b>TAP</b><small>ONE KEY AT A TIME</small></button><button className={inputPreference === 'swipe' ? 'selected' : ''} aria-pressed={inputPreference === 'swipe'} onClick={() => onInputPreference('swipe')}><b>SWIPE</b><small>WORD GESTURES</small></button></div></div>
+          {mobileViewer ? <div className="input-method-control"><span><small>INPUT STYLE</small><b>Choose your style before joining.</b></span><div role="group" aria-label="Live input method"><button className={inputPreference === 'tap' ? 'selected' : ''} aria-pressed={inputPreference === 'tap'} onClick={() => onInputPreference('tap')}><b>TAP</b><small>ONE KEY AT A TIME</small></button><button className={inputPreference === 'swipe' ? 'selected' : ''} aria-pressed={inputPreference === 'swipe'} onClick={() => onInputPreference('swipe')}><b>SWIPE</b><small>WORD GESTURES</small></button></div></div> : <div className="setup-row"><span><small>INPUT</small><b>Physical keyboard</b></span><em>AUTOMATIC</em></div>}
           <button className="primary-button" onClick={() => signedIn ? void connect() : onSignIn()} disabled={connecting}>{connecting ? 'OPENING ROOM…' : signedIn ? 'CREATE PRIVATE ROOM' : 'SIGN IN TO CREATE A ROOM'}</button>
           <span>OR JOIN WITH A ROOM CODE</span>
           <div><input value={roomCode} onChange={(event) => setRoomCode(event.target.value)} placeholder="ROOM CODE" aria-label="Live room code" /><button className="secondary-button" onClick={() => signedIn ? void connect(roomCode) : onSignIn()} disabled={connecting || !roomCode.trim()}>{signedIn ? 'JOIN' : 'SIGN IN'}</button></div>
