@@ -39,6 +39,14 @@ describe('TypeRival scoring', () => {
     }
   });
 
+  it('keeps UK English separate from the US English ladder and passage rotation', () => {
+    const ukPassages = passagesForLanguage('en-gb');
+    assert.ok(ukPassages.length >= 10);
+    assert.ok(ukPassages.some((passage) => /\b(organised|colour|centre|favourite|travellers)\b/i.test(passage.text)));
+    assert.ok(ukPassages.every((passage) => passage.language === 'en-gb'));
+    assert.equal(rankedPassageForLanguage('en-gb').language, 'en-gb');
+  });
+
   it('selects the only passage that has not been excluded', () => {
     const spanish = passagesForLanguage('es');
     const expected = spanish.at(-1)!;
