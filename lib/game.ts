@@ -11,7 +11,7 @@ export type InputTelemetry = {
   bulkInsertEvents: number;
   replacementEvents: number;
 };
-export type TypingLanguage = 'en' | 'es' | 'fr' | 'de' | 'pt' | 'it';
+export type TypingLanguage = 'en' | 'en-gb' | 'es' | 'fr' | 'de' | 'pt' | 'it';
 export type PassageCategory = 'balanced' | 'science' | 'history' | 'geography' | 'technology' | 'business' | 'sports' | 'nature' | 'health' | 'arts' | 'language';
 export type PassageCategorySelection = 'all' | PassageCategory;
 
@@ -31,7 +31,8 @@ export const PASSAGE_CATEGORIES = [
 ] as const satisfies ReadonlyArray<{ code: PassageCategorySelection; label: string }>;
 
 export const SUPPORTED_LANGUAGES = [
-  { code: 'en', label: 'English', nativeLabel: 'English' },
+  { code: 'en', label: 'English (US)', nativeLabel: 'English (US)' },
+  { code: 'en-gb', label: 'English (UK)', nativeLabel: 'English (UK)' },
   { code: 'es', label: 'Spanish', nativeLabel: 'Español' },
   { code: 'fr', label: 'French', nativeLabel: 'Français' },
   { code: 'de', label: 'German', nativeLabel: 'Deutsch' },
