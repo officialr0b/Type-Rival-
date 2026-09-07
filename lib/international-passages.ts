@@ -5,6 +5,66 @@ import type { Passage } from './game.ts';
 // fair scoring calibration before they join Ranked.
 export const INTERNATIONAL_PASSAGES: Passage[] = [
   {
+    id: 'en-gb-village-green',
+    language: 'en-gb',
+    category: 'balanced',
+    text: 'The village green looked brightest after a night of rain. Volunteers organised tables beside the cricket pitch, while neighbours carried homemade cakes from the community centre. By noon, children were queuing for games, the brass band had found its rhythm, and every spare chair had been claimed.',
+  },
+  {
+    id: 'en-gb-railway-platform',
+    language: 'en-gb',
+    category: 'balanced',
+    text: 'A light drizzle followed commuters onto the railway platform. Travellers folded their umbrellas, checked the departure board and moved towards the correct carriage. The guard gave a final signal, the doors closed, and the train slipped past rows of terraced houses on its way to the city centre.',
+  },
+  {
+    id: 'en-gb-seaside-promenade',
+    language: 'en-gb',
+    category: 'balanced',
+    text: 'Along the seaside promenade, the wind carried the smell of salt and fresh chips. Families sheltered behind striped windbreaks while cyclists passed the old theatre and the colourful beach huts. The forecast promised cloud, but a patch of afternoon sunshine was enough to fill every bench facing the water.',
+  },
+  {
+    id: 'en-gb-museum-gallery',
+    language: 'en-gb',
+    category: 'balanced',
+    text: 'The museum gallery had been carefully reorganised for the new exhibition. A curator checked each label, adjusted the lighting and centred a small portrait above its case. Visitors soon filled the quiet room, pausing to compare familiar landscapes with sketches that had rarely been shown in public.',
+  },
+  {
+    id: 'en-gb-allotment-morning',
+    language: 'en-gb',
+    category: 'balanced',
+    text: 'At the allotment, rows of broad beans and courgettes ran between narrow paths. Gardeners filled watering cans, cleared weeds and shared advice over the low fences. One plot had a tiny shed painted a cheerful colour, with a kettle, two mugs and a radio ready for the morning break.',
+  },
+  {
+    id: 'en-gb-library-project',
+    language: 'en-gb',
+    category: 'balanced',
+    text: 'The library asked local pupils to design a poster for its summer project. Each group chose a favourite book, drafted a short review and practised presenting it aloud. Their teacher encouraged clear ideas rather than perfect drawings, and the finished display gave every reader a reason to recommend another story.',
+  },
+  {
+    id: 'en-gb-canal-journey',
+    language: 'en-gb',
+    category: 'balanced',
+    text: 'The narrowboat travelled slowly along the canal as morning mist lifted from the water. At each lock, the crew stepped ashore, worked the heavy gates and waited for the level to change. Progress was measured in miles rather than speed, which left plenty of time to notice kingfishers, stone bridges and quiet towpaths.',
+  },
+  {
+    id: 'en-gb-football-training',
+    language: 'en-gb',
+    category: 'balanced',
+    text: 'Football training began beneath the floodlights with a short passing drill. The coach divided the players into small teams, reminded them to communicate and praised the simplest accurate choices. Mud covered every kit by the final whistle, but the last move of the evening was also the cleanest.',
+  },
+  {
+    id: 'en-gb-market-square',
+    language: 'en-gb',
+    category: 'balanced',
+    text: 'Saturday brought flower stalls, second-hand books and warm loaves to the market square. Shoppers compared prices, queued for tea and carried their purchases in colourful bags. The town hall clock marked each quarter hour, though few people seemed in a hurry to finish their conversations.',
+  },
+  {
+    id: 'en-gb-coastal-walk',
+    language: 'en-gb',
+    category: 'balanced',
+    text: 'The coastal path climbed above the harbour before turning towards a line of pale cliffs. Walkers checked the weather, tightened their rucksacks and stopped to admire the view across the bay. A handwritten sign outside a village café promised hot soup, fresh scones and a welcome break from the wind.',
+  },
+  {
     id: 'es-plaza-manana',
     language: 'es',
     category: 'balanced',
