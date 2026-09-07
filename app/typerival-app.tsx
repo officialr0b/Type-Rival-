@@ -27,6 +27,7 @@ import {
   rankedPassageForLanguage,
   reconcileTypingValue,
   type GameMode,
+  type DeviceClass,
   type InputMethod,
   type InputTelemetry,
   type MobileInputPreference,
@@ -225,6 +226,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
   const [category, setCategory] = useState<PassageCategorySelection>('all');
   const [durationSec, setDurationSec] = useState(45);
   const [inputPreference, setInputPreference] = useState<MobileInputPreference>('tap');
+  const [deviceClass, setDeviceClass] = useState<DeviceClass>('desktop');
   const [liveRoomId, setLiveRoomId] = useState('');
   const [passage, setPassage] = useState<Passage>(() => choosePassage([], DEFAULT_LANGUAGE));
   const [result, setResult] = useState<SavedResult | null>(null);
@@ -285,11 +287,13 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     const savedAge = parseAgeBand(window.localStorage.getItem('typerival-age-band'));
     const savedLanguage = readTypingLanguage();
     const validAge = initialAgeBand ?? savedAge;
+    const detectedDeviceClass = browserDeviceClass();
     if (initialAgeBand) window.localStorage.setItem('typerival-age-band', initialAgeBand);
     ageBandRef.current = validAge;
     languageRef.current = savedLanguage;
     const client = getSupabaseBrowserClient();
     const initializeTimer = window.setTimeout(() => {
+      setDeviceClass(detectedDeviceClass);
       if (validAge) setAgeBand(validAge);
       setLanguage(savedLanguage);
       setPassage((current) => current.language === savedLanguage ? current : choosePassage([], savedLanguage));
@@ -774,6 +778,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           category={category}
           passage={passage}
           inputPreference={inputPreference}
+          mobileViewer={deviceClass === 'mobile'}
           onLanguage={changeLanguage}
           onCategory={chooseCategory}
           onDuration={setDurationSec}
@@ -813,7 +818,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
       )}
 
       {screen === 'leaderboard' && <Leaderboard data={bootstrap} language={language} onLanguage={changeLanguage} onBack={goHome} />}
-      {screen === 'live' && <LiveFriendly initialRoomId={liveRoomId} inputPreference={inputPreference} ageBand={ageBand} signedIn={bootstrap.user.signedIn} onInputPreference={setInputPreference} onBack={goHome} onSignIn={openAuth} />}
+      {screen === 'live' && <LiveFriendly initialRoomId={liveRoomId} inputPreference={inputPreference} mobileViewer={deviceClass === 'mobile'} ageBand={ageBand} signedIn={bootstrap.user.signedIn} onInputPreference={setInputPreference} onBack={goHome} onSignIn={openAuth} />}
       {screen === 'passages' && (
         <PassageStudio
           signedIn={bootstrap.user.signedIn}
@@ -1096,7 +1101,7 @@ function LaunchCard({ number, title, label, description, action, onClick, featur
   );
 }
 
-function Setup({ mode, durationSec, challenge, language, category, passage, inputPreference, onLanguage, onCategory, onDuration, onInputPreference, onBack, onStart, starting }: {
+function Setup({ mode, durationSec, challenge, language, category, passage, inputPreference, mobileViewer, onLanguage, onCategory, onDuration, onInputPreference, onBack, onStart, starting }: {
   mode: GameMode;
   durationSec: number;
   challenge: Challenge | null;
@@ -1104,6 +1109,7 @@ function Setup({ mode, durationSec, challenge, language, category, passage, inpu
   category: PassageCategorySelection;
   passage: Passage;
   inputPreference: MobileInputPreference;
+  mobileViewer: boolean;
   onLanguage: (language: TypingLanguage) => void;
   onCategory: (category: PassageCategorySelection) => void;
   onDuration: (duration: number) => void;
@@ -1149,14 +1155,14 @@ function Setup({ mode, durationSec, challenge, language, category, passage, inpu
           ))}
         </div>
         <div className="setup-row"><span><small>PASSAGE</small><b>{custom ? passage.title : `${categoryName(category)} · ${languageName(language)}`}</b></span><em>{custom ? 'UNVERIFIED · 0 XP' : 'READY'}</em></div>
-        <div className="input-method-control">
+        {mobileViewer ? <div className="input-method-control">
           <span><small>INPUT STYLE</small><b>How do you want to type?</b></span>
           <div role="group" aria-label="Mobile input method">
             <button className={inputPreference === 'tap' ? 'selected' : ''} aria-pressed={inputPreference === 'tap'} onClick={() => onInputPreference('tap')}><b>TAP</b><small>ONE KEY AT A TIME</small></button>
             <button className={inputPreference === 'swipe' ? 'selected' : ''} aria-pressed={inputPreference === 'swipe'} onClick={() => onInputPreference('swipe')}><b>SWIPE</b><small>WORD GESTURES</small></button>
           </div>
           <p>Connected keyboards are detected automatically. Ranked results are placed on the board that matches the input observed during the run.</p>
-        </div>
+        </div> : <div className="setup-row"><span><small>INPUT</small><b>Physical keyboard</b></span><em>AUTOMATIC</em></div>}
         <button className="primary-button setup-start" onClick={onStart} disabled={starting}>{starting ? 'AUTHORIZING RUN…' : `START ${durationSec}-SECOND RUN`}</button>
       </section>
     </main>
