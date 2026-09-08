@@ -37,7 +37,14 @@ import {
   type TypingLanguage,
   type TypingMetrics,
 } from '../lib/game';
-import { parseAgeBand, type AgeBand } from '../lib/age';
+import { AGE_CHANGE_EVENT, AGE_STORAGE_KEY, parseAgeBand, type AgeBand } from '../lib/age';
+import {
+  EMPTY_JUNIOR_PROFILE,
+  awardJuniorPracticeRun,
+  juniorProgression,
+  parseJuniorLocalProfile,
+  type JuniorLocalProfile,
+} from '../lib/junior-profile';
 import {
   buildPracticeCoachingReport,
   createCoachingRun,
@@ -239,6 +246,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
   const [challenge, setChallenge] = useState<Challenge | null>(null);
   const [installPrompt, setInstallPrompt] = useState<DeferredInstallPrompt | null>(null);
   const [localStats, setLocalStats] = useState<PracticeStats>(emptyStats);
+  const [juniorProfile, setJuniorProfile] = useState<JuniorLocalProfile>(EMPTY_JUNIOR_PROFILE);
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<'signin' | 'update'>('signin');
   const [runTicket, setRunTicket] = useState<RunTicket | null>(null);
@@ -250,6 +258,11 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     currentAge: AgeBand | null,
     currentLanguage: TypingLanguage = languageRef.current,
   ) => {
+    if (!currentAge || currentAge === 'under13') {
+      setBootstrap(defaultBootstrap);
+      setLoadingProfile(false);
+      return;
+    }
     try {
       const query = new URLSearchParams({ language: currentLanguage });
       if (currentAge) query.set('ageBand', currentAge);
@@ -262,6 +275,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           desktop?: LeaderboardEntry[];
         };
       };
+      if (ageBandRef.current === 'under13') return;
       setBootstrap({
         ...loaded,
         leaderboard: loaded.leaderboard ?? [],
@@ -284,20 +298,21 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
   }, []);
 
   useEffect(() => {
-    const savedAge = parseAgeBand(window.localStorage.getItem('typerival-age-band'));
+    const savedAge = parseAgeBand(window.localStorage.getItem(AGE_STORAGE_KEY));
     const savedLanguage = readTypingLanguage();
     const validAge = initialAgeBand ?? savedAge;
     const detectedDeviceClass = browserDeviceClass();
-    if (initialAgeBand) window.localStorage.setItem('typerival-age-band', initialAgeBand);
+    if (initialAgeBand) window.localStorage.setItem(AGE_STORAGE_KEY, initialAgeBand);
     ageBandRef.current = validAge;
     languageRef.current = savedLanguage;
-    const client = getSupabaseBrowserClient();
+    const client = !validAge || validAge === 'under13' ? null : getSupabaseBrowserClient();
     const initializeTimer = window.setTimeout(() => {
       setDeviceClass(detectedDeviceClass);
       if (validAge) setAgeBand(validAge);
       setLanguage(savedLanguage);
       setPassage((current) => current.language === savedLanguage ? current : choosePassage([], savedLanguage));
-      setLocalStats(readLocalStats(savedLanguage));
+      setLocalStats(readLocalStats(savedLanguage, validAge === 'under13'));
+      setJuniorProfile(readLocalJuniorProfile());
       // Supabase emits INITIAL_SESSION once its persisted session is ready.
       // Only fall back to a direct load when account services are not configured.
       if (!client) void refreshBootstrap(validAge, savedLanguage);
@@ -305,6 +320,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
 
     const params = new URLSearchParams(window.location.search);
     const authTimer = window.setTimeout(() => {
+      if (validAge === 'under13') return;
       if (params.get('auth') === 'reset') {
         setAuthMode('update');
         setAuthOpen(true);
@@ -315,7 +331,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
       }
     }, 0);
     const challengeCode = params.get('challenge');
-    if (challengeCode) {
+    if (challengeCode && validAge !== 'under13') {
       authFetch(`/api/challenges/${encodeURIComponent(challengeCode)}`)
         .then(async (response) => {
           if (!response.ok) throw new Error('not found');
@@ -337,7 +353,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     }
     const requestedLiveRoom = params.get('live');
     const liveTimer = window.setTimeout(() => {
-      if (requestedLiveRoom) {
+      if (requestedLiveRoom && validAge !== 'under13') {
         setLiveRoomId(requestedLiveRoom);
         setScreen('live');
       }
@@ -408,7 +424,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     setPassage(mode === 'ranked'
       ? rankedPassageForLanguage(nextLanguage)
       : chooseFreshPassage(undefined, nextLanguage, 'all'));
-    setLocalStats(readLocalStats(nextLanguage));
+    setLocalStats(readLocalStats(nextLanguage, ageBandRef.current === 'under13'));
     setRunTicket(null);
     setMessage('Typing language updated. Rankings and coaching now show this language.');
     void refreshBootstrap(ageBandRef.current, nextLanguage);
@@ -512,9 +528,10 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
   const completeRace = async (localResult: LocalRaceResult) => {
     const customPassage = isCustomPassage(localResult.passage);
     if (!customPassage) rememberPassage(localResult.passage.id);
+    const privateJuniorRun = ageBand === 'under13';
     const coachingHistory = bootstrap.user.signedIn && bootstrap.coachingHistory.length > 0
       ? bootstrap.coachingHistory
-      : readLocalCoachingHistory(localResult.passage.language);
+      : readLocalCoachingHistory(localResult.passage.language, privateJuniorRun);
     const recentInsightKeys = coachingHistory.slice(0, 3).flatMap((run) => run.insightKeys);
     const coachingReport = localResult.mode === 'practice'
       ? buildPracticeCoachingReport({
@@ -534,16 +551,24 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
         metrics: localResult.metrics,
         profile: localResult.typingProfile,
         insightKeys: coachingReport.insightKeys,
-      }));
+      }), privateJuniorRun);
     }
     setSaving(true);
     setScreen('results');
     setResult({ ...enrichedResult, xpEarned: 0, saved: false });
     if ((!bootstrap.user.signedIn || ageBand === 'under13') && !customPassage) {
-      setLocalStats(recordLocalRun(localResult));
+      setLocalStats(recordLocalRun(localResult, privateJuniorRun));
     }
     if (ageBand === 'under13') {
-      setResult({ ...enrichedResult, xpEarned: customPassage ? 0 : 20, saved: false });
+      const xpEarned = customPassage ? 0 : 20;
+      const nextProfile = recordLocalJuniorRun(juniorProfile, xpEarned);
+      setJuniorProfile(nextProfile);
+      setResult({
+        ...enrichedResult,
+        xpEarned,
+        progression: juniorProgression(nextProfile.totalXp),
+        saved: false,
+      });
       setSaving(false);
       return;
     }
@@ -682,10 +707,16 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
   }, [refreshBootstrap]);
 
   const saveAge = async (nextAge: AgeBand) => {
-    window.localStorage.setItem('typerival-age-band', nextAge);
+    window.localStorage.setItem(AGE_STORAGE_KEY, nextAge);
+    window.dispatchEvent(new Event(AGE_CHANGE_EVENT));
     ageBandRef.current = nextAge;
     setAgeBand(nextAge);
-    if (nextAge === 'under13') await getSupabaseBrowserClient()?.auth.signOut();
+    if (nextAge === 'under13') {
+      setBootstrap(defaultBootstrap);
+      setJuniorProfile(readLocalJuniorProfile());
+      setLoadingProfile(false);
+      await getSupabaseBrowserClient()?.auth.signOut({ scope: 'local' });
+    }
     await refreshBootstrap(nextAge, language);
   };
 
@@ -725,7 +756,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
       languageRef.current = preferredLanguage;
       setLanguage(preferredLanguage);
       setPassage(chooseFreshPassage(undefined, preferredLanguage, 'all'));
-      setLocalStats(readLocalStats(preferredLanguage));
+      setLocalStats(readLocalStats(preferredLanguage, ageBandRef.current === 'under13'));
       void refreshBootstrap(ageBandRef.current, preferredLanguage);
     }
     setScreen('home');
@@ -738,11 +769,16 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     window.requestAnimationFrame(() => window.scrollTo({ top: 0 }));
   };
 
+  const privateJunior = ageBand === 'under13';
+  const juniorCareer = privateJunior ? juniorProgression(juniorProfile.totalXp) : null;
+
   return (
     <>
       <Header
         player={bootstrap.user}
         progression={bootstrap.progression}
+        juniorCareer={juniorCareer}
+        privateJunior={privateJunior}
         loading={loadingProfile}
         onHome={goHome}
         onLeaderboard={() => setScreen('leaderboard')}
@@ -758,6 +794,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
         <Home
           bootstrap={bootstrap}
           localStats={localStats}
+          juniorCareer={juniorCareer}
           ageBand={ageBand}
           language={language}
           onLanguage={changeLanguage}
@@ -807,6 +844,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           result={result}
           saving={saving}
           signedIn={bootstrap.user.signedIn}
+          privateJunior={privateJunior}
           playerHandle={bootstrap.user.handle}
           message={message}
           onRankedMatch={applyRankedMatch}
@@ -817,8 +855,8 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
         />
       )}
 
-      {screen === 'leaderboard' && <Leaderboard data={bootstrap} language={language} onLanguage={changeLanguage} onBack={goHome} />}
-      {screen === 'live' && <LiveFriendly initialRoomId={liveRoomId} inputPreference={inputPreference} mobileViewer={deviceClass === 'mobile'} ageBand={ageBand} signedIn={bootstrap.user.signedIn} onInputPreference={setInputPreference} onBack={goHome} onSignIn={openAuth} />}
+      {screen === 'leaderboard' && !privateJunior && <Leaderboard data={bootstrap} language={language} onLanguage={changeLanguage} onBack={goHome} />}
+      {screen === 'live' && !privateJunior && <LiveFriendly initialRoomId={liveRoomId} inputPreference={inputPreference} mobileViewer={deviceClass === 'mobile'} ageBand={ageBand} signedIn={bootstrap.user.signedIn} onInputPreference={setInputPreference} onBack={goHome} onSignIn={openAuth} />}
       {screen === 'passages' && (
         <PassageStudio
           signedIn={bootstrap.user.signedIn}
@@ -854,13 +892,13 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           <a href="/privacy">Privacy</a>
           <a href="/rules">Fair play</a>
           <button onClick={() => setScreen('legal')}>Summary</button>
-          <button onClick={() => setScreen('feedback')}>Feedback</button>
+          {!privateJunior && <button onClick={() => setScreen('feedback')}>Feedback</button>}
         </span>
         <span>Free-to-play MVP · No cash prizes</span>
       </footer>
 
       {!ageBand && <AgeGate onChoose={saveAge} />}
-      {authOpen && (
+      {authOpen && !privateJunior && (
         <AuthModal
           key={authMode}
           open
@@ -874,9 +912,11 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
   );
 }
 
-function Header({ player, progression, loading, onHome, onLeaderboard, onInstall, onAccount, onSignIn, onSignOut }: {
+function Header({ player, progression, juniorCareer, privateJunior, loading, onHome, onLeaderboard, onInstall, onAccount, onSignIn, onSignOut }: {
   player: Player;
   progression: Progression | null;
+  juniorCareer: Progression | null;
+  privateJunior: boolean;
   loading: boolean;
   onHome: () => void;
   onLeaderboard: () => void;
@@ -891,9 +931,11 @@ function Header({ player, progression, loading, onHome, onLeaderboard, onInstall
         <span className="wordmark-mark">TR</span><span>TYPE<b>RIVAL</b></span>
       </button>
       <nav aria-label="Primary navigation">
-        <button onClick={onLeaderboard}>Leaderboard</button>
+        {!privateJunior && <button onClick={onLeaderboard}>Leaderboard</button>}
         <button onClick={onInstall}>Install</button>
-        {player.signedIn ? (
+        {privateJunior ? (
+          <span className="nav-private">PRIVATE · THIS DEVICE</span>
+        ) : player.signedIn ? (
           <>
             <button className="nav-cta" onClick={onAccount}>Account</button>
             <button className="nav-signout" onClick={onSignOut}>Sign out</button>
@@ -903,21 +945,24 @@ function Header({ player, progression, loading, onHome, onLeaderboard, onInstall
         )}
       </nav>
       <div className="nav-player" aria-live="polite">
-        {player.signedIn && progression
-          ? <span className="nav-level" aria-label={`Level ${progression.level.level}`}><small>LV</small><b>{progression.level.level}</b></span>
+        {privateJunior && juniorCareer
+          ? <span className="nav-level" aria-label={`Local level ${juniorCareer.level.level}`}><small>LV</small><b>{juniorCareer.level.level}</b></span>
+          : player.signedIn && progression
+            ? <span className="nav-level" aria-label={`Level ${progression.level.level}`}><small>LV</small><b>{progression.level.level}</b></span>
           : <span className="nav-avatar">{player.handle?.slice(0, 1).toUpperCase() ?? 'R'}</span>}
         <span>
-          <small>{loading ? 'LOADING' : player.signedIn && isBoostActive(player.doubleXpUntil) ? `2× XP · ${boostMinutes(player.doubleXpUntil)}M` : player.signedIn && progression ? `${progression.totalXp} XP · RATING ${player.rating}` : player.signedIn ? `RATING ${player.rating}` : 'LOCAL PLAYER'}</small>
-          <b>{player.signedIn && progression ? `${progression.level.name} · ${player.handle}` : player.handle ?? 'Guest Rival'}</b>
+          <small>{privateJunior && juniorCareer ? `${juniorCareer.totalXp} XP · DEVICE ONLY` : loading ? 'LOADING' : player.signedIn && isBoostActive(player.doubleXpUntil) ? `2× XP · ${boostMinutes(player.doubleXpUntil)}M` : player.signedIn && progression ? `${progression.totalXp} XP · RATING ${player.rating}` : player.signedIn ? `RATING ${player.rating}` : 'LOCAL PLAYER'}</small>
+          <b>{privateJunior && juniorCareer ? `${juniorCareer.level.name} · Junior Rival` : player.signedIn && progression ? `${progression.level.name} · ${player.handle}` : player.handle ?? 'Guest Rival'}</b>
         </span>
       </div>
     </header>
   );
 }
 
-function Home({ bootstrap, localStats, ageBand, language, onLanguage, onMode, onLive, onLeaderboard, onPassageStudio, onSignIn }: {
+function Home({ bootstrap, localStats, juniorCareer, ageBand, language, onLanguage, onMode, onLive, onLeaderboard, onPassageStudio, onSignIn }: {
   bootstrap: Bootstrap;
   localStats: PracticeStats;
+  juniorCareer: Progression | null;
   ageBand: AgeBand | null;
   language: TypingLanguage;
   onLanguage: (language: TypingLanguage) => void;
@@ -937,24 +982,29 @@ function Home({ bootstrap, localStats, ageBand, language, onLanguage, onMode, on
           <p>Practice your speed, challenge a friend with one link, or bank a ranked run for a similarly skilled rival.</p>
           <div className="hero-actions">
             <button className="primary-button" onClick={() => onMode('practice')}>START A 45-SECOND RUN</button>
-            <button className="text-button" onClick={onLeaderboard}>VIEW 30-DAY BOARD →</button>
+            {ageBand === 'under13'
+              ? <span className="junior-private-label">PRIVATE · SAVED ON THIS DEVICE</span>
+              : <button className="text-button" onClick={onLeaderboard}>VIEW 30-DAY BOARD →</button>}
           </div>
         </div>
         <div className="hero-scorecard" aria-label="Your 30-day summary">
-          <div className="scorecard-head"><span>YOUR 30 DAYS · {languageName(language).toUpperCase()}</span><em>{bootstrap.user.signedIn ? 'SYNCED' : 'LOCAL ONLY'}</em></div>
+          <div className="scorecard-head"><span>YOUR 30 DAYS · {languageName(language).toUpperCase()}</span><em>{ageBand === 'under13' ? 'DEVICE ONLY' : bootstrap.user.signedIn ? 'SYNCED' : 'LOCAL ONLY'}</em></div>
           <strong>{Math.round(stats.averageWpm || 0)}</strong><small>AVERAGE WPM</small>
           <div className="mini-stats">
             <span><b>{Number(stats.accuracy || 0).toFixed(1)}%</b><small>ACCURACY</small></span>
             <span><b>{Math.round(stats.bestWpm || 0)}</b><small>PERSONAL BEST</small></span>
             <span><b>{stats.sessions || 0}</b><small>RUNS</small></span>
           </div>
-          {!bootstrap.user.signedIn && <p>Sign in after your run to start building a verified history.</p>}
+          {ageBand === 'under13'
+            ? <p>Your practice history stays in this browser and never appears on public leaderboards. Clearing browser data removes it.</p>
+            : !bootstrap.user.signedIn && <p>Sign in after your run to start building a verified history.</p>}
         </div>
       </section>
 
       <ProgressionCommandCenter
-        progression={bootstrap.progression}
+        progression={ageBand === 'under13' ? juniorCareer : bootstrap.progression}
         eligible={ageBand !== 'under13'}
+        localOnly={ageBand === 'under13'}
         onSignIn={onSignIn}
       />
 
@@ -982,9 +1032,10 @@ function Home({ bootstrap, localStats, ageBand, language, onLanguage, onMode, on
   );
 }
 
-function ProgressionCommandCenter({ progression, eligible, onSignIn }: {
+function ProgressionCommandCenter({ progression, eligible, localOnly = false, onSignIn }: {
   progression: Progression | null;
   eligible: boolean;
+  localOnly?: boolean;
   onSignIn: () => void;
 }) {
   if (!progression) {
@@ -1007,7 +1058,7 @@ function ProgressionCommandCenter({ progression, eligible, onSignIn }: {
 
   return <section className="progression-command" aria-labelledby="career-heading">
     <div className="progression-rank">
-      <span className="eyebrow">RIVAL CAREER · LIFETIME XP</span>
+      <span className="eyebrow">{localOnly ? 'JUNIOR CAREER · DEVICE-ONLY XP' : 'RIVAL CAREER · LIFETIME XP'}</span>
       <div className="rank-line"><strong>{progression.level.level}</strong><span><small>CURRENT LEVEL</small><h2 id="career-heading">{progression.level.name}</h2></span></div>
       <div className="level-progress-copy">
         <b>{progression.totalXp.toLocaleString()} XP</b>
@@ -1018,21 +1069,26 @@ function ProgressionCommandCenter({ progression, eligible, onSignIn }: {
 
     <LevelJourney level={progression.level} />
 
-    <div className="mission-board">
+    {localOnly ? <div className="junior-local-panel">
+      <span className="eyebrow">PRIVATE PROGRESS</span>
+      <h3>Practice now. Keep the progress here.</h3>
+      <p>Each reviewed Practice run adds 20 local XP. No account, email, run, or profile is sent to TypeRival’s database.</p>
+    </div> : <div className="mission-board">
       <header><div><span className="eyebrow">MISSION CONTROL</span><h3>Make today count.</h3></div><small>DAILY 00:00 UTC · WEEKLY MONDAY</small></header>
       <div className="mission-list">
         {progression.missions.map((mission) => <MissionRow key={mission.key} mission={mission} />)}
       </div>
-    </div>
+    </div>}
 
     <aside className="career-checkpoint">
-      <span>CAREER CHECKPOINT</span>
+      <span>{localOnly ? 'LOCAL PROFILE' : 'CAREER CHECKPOINT'}</span>
       <b>{progression.level.name}</b>
       <dl>
         <div><dt>ACTIVE TITLE</dt><dd>{progression.level.name}</dd></div>
         <div><dt>NEXT TITLE</dt><dd>{progression.level.nextLevel?.name ?? 'Career complete'}</dd></div>
-        <div><dt>XP RULE</dt><dd>Permanent · never resets</dd></div>
+        <div><dt>XP RULE</dt><dd>{localOnly ? 'This browser only' : 'Permanent · never resets'}</dd></div>
       </dl>
+      {localOnly && <p>There is no cloud backup or transfer yet. Clearing this browser’s site data removes the profile.</p>}
     </aside>
   </section>;
 }
@@ -1595,10 +1651,11 @@ function RaceMetric({ value, label, accent, warning }: { value: string | number;
   return <span className={`race-metric ${accent ? 'accent' : ''} ${warning ? 'warning' : ''}`}><b>{value}</b><small>{label}</small></span>;
 }
 
-function Results({ result, saving, signedIn, playerHandle, message, onRankedMatch, onFriendlyMatch, onAgain, onHome, onSignIn }: {
+function Results({ result, saving, signedIn, privateJunior, playerHandle, message, onRankedMatch, onFriendlyMatch, onAgain, onHome, onSignIn }: {
   result: SavedResult;
   saving: boolean;
   signedIn: boolean;
+  privateJunior: boolean;
   playerHandle?: string;
   message: string;
   onRankedMatch: (match: NonNullable<SavedResult['match']>) => void;
@@ -1613,7 +1670,7 @@ function Results({ result, saving, signedIn, playerHandle, message, onRankedMatc
   const headline = saving ? 'Validating your run…' : outcome === 'win' ? 'You took the win.' : outcome === 'loss' ? 'Your rival got this one.' : outcome === 'draw' ? 'Dead even.' : result.metrics.accuracy >= 97 ? 'Fast and under control.' : 'Baseline recorded.';
 
   useEffect(() => {
-    if (result.mode !== 'ranked' || result.match?.status !== 'pending' || !result.sessionId) return;
+    if (privateJunior || result.mode !== 'ranked' || result.match?.status !== 'pending' || !result.sessionId) return;
     let stopped = false;
     let timer = 0;
 
@@ -1636,10 +1693,10 @@ function Results({ result, saving, signedIn, playerHandle, message, onRankedMatc
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [onRankedMatch, result.match?.status, result.mode, result.sessionId]);
+  }, [onRankedMatch, privateJunior, result.match?.status, result.mode, result.sessionId]);
 
   useEffect(() => {
-    if (result.mode !== 'friendly' || result.friendlyMatch || !result.challengeUrl) return;
+    if (privateJunior || result.mode !== 'friendly' || result.friendlyMatch || !result.challengeUrl) return;
     const code = new URL(result.challengeUrl).searchParams.get('challenge');
     if (!code) return;
     let stopped = false;
@@ -1669,10 +1726,10 @@ function Results({ result, saving, signedIn, playerHandle, message, onRankedMatc
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [onFriendlyMatch, result.challengeUrl, result.friendlyMatch, result.mode]);
+  }, [onFriendlyMatch, privateJunior, result.challengeUrl, result.friendlyMatch, result.mode]);
 
   const shareChallenge = async () => {
-    if (!result.challengeUrl) return;
+    if (privateJunior || !result.challengeUrl) return;
     const data = { title: 'TypeRival challenge', text: `I set a TypeRival score. Can you beat it?`, url: result.challengeUrl };
     if (navigator.share) await navigator.share(data);
     else { await navigator.clipboard.writeText(result.challengeUrl); window.alert('Challenge link copied.'); }
@@ -1683,17 +1740,17 @@ function Results({ result, saving, signedIn, playerHandle, message, onRankedMatc
       <section className="result-copy">
         <span className="eyebrow">{saving ? 'SERVER CHECK' : outcome ? `${outcome.toUpperCase()} · HEAD-TO-HEAD` : 'RUN COMPLETE'}</span>
         <h1>{headline}</h1>
-        <p>{custom ? 'Custom-passage results are unverified training: they do not change XP, ratings, verified averages, or public leaderboards.' : result.riskStatus === 'review' ? 'This run is held for integrity review and will not reach public rankings yet.' : result.saved ? 'Your result passed validation and your progress is saved.' : signedIn ? message || 'This result stayed local.' : 'Sign in to save XP, history, and ranked results.'}</p>
-        <div className="reward-card"><span><small>{custom ? 'CUSTOM TRAINING' : 'SESSION REWARD'}</small><b>+{result.xpEarned + (result.missionBonusXp ?? 0)} XP</b></span><em>{custom ? 'UNVERIFIED' : result.xpMultiplier === 2 ? '2× APPLIED' : result.saved ? 'SAVED' : 'LOCAL'}</em></div>
+        <p>{privateJunior ? 'Your result and coaching are saved privately in this browser. Nothing from this run enters TypeRival’s database or public leaderboards.' : custom ? 'Custom-passage results are unverified training: they do not change XP, ratings, verified averages, or public leaderboards.' : result.riskStatus === 'review' ? 'This run is held for integrity review and will not reach public rankings yet.' : result.saved ? 'Your result passed validation and your progress is saved.' : signedIn ? message || 'This result stayed local.' : 'Sign in to save XP, history, and ranked results.'}</p>
+        <div className="reward-card"><span><small>{custom ? 'CUSTOM TRAINING' : privateJunior ? 'LOCAL PRACTICE REWARD' : 'SESSION REWARD'}</small><b>+{result.xpEarned + (result.missionBonusXp ?? 0)} XP</b></span><em>{custom ? 'UNVERIFIED' : privateJunior ? 'DEVICE ONLY' : result.xpMultiplier === 2 ? '2× APPLIED' : result.saved ? 'SAVED' : 'LOCAL'}</em></div>
         {(result.missionBonusXp ?? 0) > 0 && <div className="mission-earned"><b>MISSION COMPLETE · +{result.missionBonusXp} XP</b><span>{result.progression?.newlyCompleted.map((key) => missionTitle(key)).join(' · ')}</span></div>}
         {result.progression && <ResultProgress progression={result.progression} />}
         {outcome === 'win' && isBoostActive(doubleXpUntil) && <div className="boost-earned"><b>2× XP ACTIVATED</b><span>Your next runs earn double XP for about {boostMinutes(doubleXpUntil)} minutes.</span></div>}
-        {result.challengeUrl && <button className="share-button" onClick={shareChallenge}>SHARE CHALLENGE LINK ↗</button>}
+        {!privateJunior && result.challengeUrl && <button className="share-button" onClick={shareChallenge}>SHARE CHALLENGE LINK ↗</button>}
         {result.mode === 'ranked' && result.match?.status === 'pending' && <div className="pending-match"><i />Result banked. We’ll pair it with the next compatible rival.</div>}
         {result.mode === 'friendly' && !result.friendlyMatch && <div className="pending-match"><i />Challenge ready. This screen updates when your rival finishes.</div>}
         {result.match?.status === 'matched' && <div className="pending-match"><i />vs. {result.match.opponentHandle} · {formatDelta(result.match.ratingDelta)} rating</div>}
         {result.friendlyMatch && <div className="pending-match"><i />vs. {result.friendlyMatch.opponentHandle} · friendly result complete</div>}
-        {!signedIn && <button className="text-button result-signin" onClick={onSignIn}>SIGN IN TO START YOUR VERIFIED HISTORY →</button>}
+        {!signedIn && !privateJunior && <button className="text-button result-signin" onClick={onSignIn}>SIGN IN TO START YOUR VERIFIED HISTORY →</button>}
       </section>
       <section className="result-performance">
         <section className="result-card">
@@ -1710,7 +1767,7 @@ function Results({ result, saving, signedIn, playerHandle, message, onRankedMatc
             <span><small>TIME</small><b>{(result.elapsedMs / 1_000).toFixed(1)}s</b></span>
             <span><small>CORRECTIONS</small><b>{result.typingProfile.corrections}</b></span>
           </div>
-          <ShareResultButton result={result} playerHandle={playerHandle} />
+          {!privateJunior && <ShareResultButton result={result} playerHandle={playerHandle} />}
           <div className="result-actions"><button className="primary-button" onClick={onAgain}>RUN IT BACK</button><button className="secondary-button" onClick={onHome}>HOME</button></div>
         </section>
         <ResultInsightRail result={result} onAgain={onAgain} />
@@ -2124,7 +2181,7 @@ function AgeGate({ onChoose }: { onChoose: (age: AgeBand) => void }) {
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="age-title">
       <section className="age-modal" ref={modalRef}><span className="wordmark-mark">TR</span><span className="eyebrow">ONE QUICK CHECK</span><h2 id="age-title">Which age range are you in?</h2><p>This keeps the competition and saved-data experience appropriate. We do not need your birthdate.</p>
-        <div className="age-options"><a href="/?age=under13" onClick={() => onChoose('under13')}><b>Under 13</b><span>Private practice only</span></a><a href="/?age=teen" onClick={() => onChoose('teen')}><b>13–17</b><span>Free competitive play</span></a><a href="/?age=adult" onClick={() => onChoose('adult')}><b>18+</b><span>All free MVP modes</span></a></div>
+        <div className="age-options"><a href="/?age=under13" onClick={() => onChoose('under13')}><b>Under 13</b><span>Private profile · this device only</span></a><a href="/?age=teen" onClick={() => onChoose('teen')}><b>13–17</b><span>Free competitive play</span></a><a href="/?age=adult" onClick={() => onChoose('adult')}><b>18+</b><span>All free MVP modes</span></a></div>
         <small>You can change this later by clearing TypeRival’s local site data.</small>
       </section>
     </div>
@@ -2157,7 +2214,29 @@ function boostMinutes(value?: string | null) {
 
 type StoredRun = { netWpm: number; accuracy: number; createdAt: string; language?: TypingLanguage };
 const LOCAL_COACHING_HISTORY_KEY = 'typerival-coaching-history-v1';
+const LOCAL_JUNIOR_COACHING_HISTORY_KEY = 'typerival-junior-coaching-history-v1';
+const LOCAL_JUNIOR_PROFILE_KEY = 'typerival-junior-profile-v1';
+const LOCAL_JUNIOR_RUNS_KEY = 'typerival-junior-runs-v1';
+const LOCAL_RUNS_KEY = 'typerival-local-runs';
 const TYPING_LANGUAGE_KEY = 'typerival-language-v1';
+
+function readLocalJuniorProfile(): JuniorLocalProfile {
+  try {
+    return parseJuniorLocalProfile(JSON.parse(window.localStorage.getItem(LOCAL_JUNIOR_PROFILE_KEY) ?? 'null'));
+  } catch {
+    return EMPTY_JUNIOR_PROFILE;
+  }
+}
+
+function recordLocalJuniorRun(profile: JuniorLocalProfile, xpEarned: number) {
+  const nextProfile = awardJuniorPracticeRun(profile, xpEarned);
+  try {
+    window.localStorage.setItem(LOCAL_JUNIOR_PROFILE_KEY, JSON.stringify(nextProfile));
+  } catch {
+    // The current visit can still display progress if device storage is unavailable.
+  }
+  return nextProfile;
+}
 
 function readTypingLanguage(): TypingLanguage {
   try {
@@ -2190,9 +2269,10 @@ function inputMethodLabel(inputMethod: InputMethod) {
   return 'Desktop / hardware';
 }
 
-function readStoredCoachingHistory(): CoachingRun[] {
+function readStoredCoachingHistory(privateJunior = false): CoachingRun[] {
   try {
-    const saved = JSON.parse(window.localStorage.getItem(LOCAL_COACHING_HISTORY_KEY) ?? '[]') as unknown;
+    const storageKey = privateJunior ? LOCAL_JUNIOR_COACHING_HISTORY_KEY : LOCAL_COACHING_HISTORY_KEY;
+    const saved = JSON.parse(window.localStorage.getItem(storageKey) ?? '[]') as unknown;
     if (!Array.isArray(saved)) return [];
     return saved.flatMap((entry) => {
       if (!entry || typeof entry !== 'object') return [];
@@ -2213,14 +2293,15 @@ function readStoredCoachingHistory(): CoachingRun[] {
   }
 }
 
-function readLocalCoachingHistory(language: TypingLanguage): CoachingRun[] {
-  return readStoredCoachingHistory().filter((run) => (getPassage(run.passageId)?.language ?? DEFAULT_LANGUAGE) === language);
+function readLocalCoachingHistory(language: TypingLanguage, privateJunior = false): CoachingRun[] {
+  return readStoredCoachingHistory(privateJunior).filter((run) => (getPassage(run.passageId)?.language ?? DEFAULT_LANGUAGE) === language);
 }
 
-function recordLocalCoachingRun(run: CoachingRun) {
+function recordLocalCoachingRun(run: CoachingRun, privateJunior = false) {
   try {
-    const history = readStoredCoachingHistory();
-    window.localStorage.setItem(LOCAL_COACHING_HISTORY_KEY, JSON.stringify([run, ...history].slice(0, 30)));
+    const storageKey = privateJunior ? LOCAL_JUNIOR_COACHING_HISTORY_KEY : LOCAL_COACHING_HISTORY_KEY;
+    const history = readStoredCoachingHistory(privateJunior);
+    window.localStorage.setItem(storageKey, JSON.stringify([run, ...history].slice(0, 30)));
   } catch {
     // The current report still works when private/local storage is unavailable.
   }
@@ -2286,23 +2367,25 @@ function chooseFreshPassage(
   return choosePassage(excluded, language, category);
 }
 
-function recordLocalRun(result: LocalRaceResult): PracticeStats {
+function recordLocalRun(result: LocalRaceResult, privateJunior = false): PracticeStats {
   try {
     const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1_000;
-    const existing = JSON.parse(window.localStorage.getItem('typerival-local-runs') ?? '[]') as StoredRun[];
+    const storageKey = privateJunior ? LOCAL_JUNIOR_RUNS_KEY : LOCAL_RUNS_KEY;
+    const existing = JSON.parse(window.localStorage.getItem(storageKey) ?? '[]') as StoredRun[];
     const current = existing.filter((run) => new Date(run.createdAt).getTime() >= cutoff);
     current.push({ netWpm: result.metrics.netWpm, accuracy: result.metrics.accuracy, createdAt: new Date().toISOString(), language: result.passage.language });
-    window.localStorage.setItem('typerival-local-runs', JSON.stringify(current.slice(-250)));
+    window.localStorage.setItem(storageKey, JSON.stringify(current.slice(-250)));
     return summarizeLocalRuns(current.filter((run) => (run.language ?? DEFAULT_LANGUAGE) === result.passage.language));
   } catch {
     return emptyStats;
   }
 }
 
-function readLocalStats(language: TypingLanguage): PracticeStats {
+function readLocalStats(language: TypingLanguage, privateJunior = false): PracticeStats {
   try {
     const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1_000;
-    const runs = (JSON.parse(window.localStorage.getItem('typerival-local-runs') ?? '[]') as StoredRun[])
+    const storageKey = privateJunior ? LOCAL_JUNIOR_RUNS_KEY : LOCAL_RUNS_KEY;
+    const runs = (JSON.parse(window.localStorage.getItem(storageKey) ?? '[]') as StoredRun[])
       .filter((run) => new Date(run.createdAt).getTime() >= cutoff)
       .filter((run) => (run.language ?? DEFAULT_LANGUAGE) === language);
     return summarizeLocalRuns(runs);

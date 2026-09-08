@@ -44,6 +44,7 @@ const EMPTY_DRAFT: Draft = {
 };
 
 const PRIVATE_PASSAGES_KEY = 'typerival-private-passages-v1';
+const PRIVATE_JUNIOR_PASSAGES_KEY = 'typerival-junior-private-passages-v1';
 
 export default function PassageStudio({ signedIn, ageBand, language, onLanguage, onBack, onCurated, onCustom, onSignIn }: {
   signedIn: boolean;
@@ -55,6 +56,7 @@ export default function PassageStudio({ signedIn, ageBand, language, onLanguage,
   onCustom: (passage: Passage, mode: Extract<GameMode, 'practice' | 'friendly'>) => void;
   onSignIn: () => void;
 }) {
+  const localOnly = ageBand === 'under13';
   const [draft, setDraft] = useState<Draft>({ ...EMPTY_DRAFT, language });
   const [privatePassages, setPrivatePassages] = useState<Passage[]>([]);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
@@ -63,9 +65,9 @@ export default function PassageStudio({ signedIn, ageBand, language, onLanguage,
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setPrivatePassages(readPrivatePassages()), 0);
+    const timer = window.setTimeout(() => setPrivatePassages(readPrivatePassages(localOnly)), 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [localOnly]);
 
   useEffect(() => {
     if (!signedIn) {
@@ -114,7 +116,7 @@ export default function PassageStudio({ signedIn, ageBand, language, onLanguage,
 
   const savePrivate = (passage = buildPassage()) => {
     const saved = [passage, ...privatePassages.filter((item) => item.text !== passage.text)].slice(0, 20);
-    window.localStorage.setItem(PRIVATE_PASSAGES_KEY, JSON.stringify(saved));
+    window.localStorage.setItem(localOnly ? PRIVATE_JUNIOR_PASSAGES_KEY : PRIVATE_PASSAGES_KEY, JSON.stringify(saved));
     setPrivatePassages(saved);
     setStatus('Saved privately on this device.');
     return passage;
@@ -149,7 +151,7 @@ export default function PassageStudio({ signedIn, ageBand, language, onLanguage,
 
   const deletePrivate = (id: string) => {
     const saved = privatePassages.filter((passage) => passage.id !== id);
-    window.localStorage.setItem(PRIVATE_PASSAGES_KEY, JSON.stringify(saved));
+    window.localStorage.setItem(localOnly ? PRIVATE_JUNIOR_PASSAGES_KEY : PRIVATE_PASSAGES_KEY, JSON.stringify(saved));
     setPrivatePassages(saved);
     setStatus('Private passage removed from this device.');
   };
@@ -197,7 +199,9 @@ export default function PassageStudio({ signedIn, ageBand, language, onLanguage,
       <button className="back-button" onClick={onBack}>← BACK HOME</button>
       <span className="eyebrow">PASSAGE STUDIO · LEARN WHILE YOU TYPE</span>
       <h1>Choose the subject. Own the words.</h1>
-      <p className="studio-intro">Practice with reviewed learning passages, write something private, challenge a friend with your own text, or submit an original passage for the future public library.</p>
+      <p className="studio-intro">{localOnly
+        ? 'Practice with reviewed learning passages or write something private. Junior passages stay in this browser and cannot be shared or submitted.'
+        : 'Practice with reviewed learning passages, write something private, challenge a friend with your own text, or submit an original passage for the future public library.'}</p>
 
       <section className="studio-section curated-section">
         <div className="studio-heading"><div><small>01 · CURATED LIBRARY</small><h2>Pick a subject</h2><p>Reviewed passages earn normal Practice XP and can appear in verified play.</p></div>
@@ -226,14 +230,14 @@ export default function PassageStudio({ signedIn, ageBand, language, onLanguage,
         </div>
         <div className="studio-actions">
           <button className="primary-button" type="button" onClick={() => playCustom('practice')}>PRACTICE THIS</button>
-          <button className="secondary-button" type="button" onClick={() => playCustom('friendly')}>CHALLENGE A FRIEND</button>
+          {!localOnly && <button className="secondary-button" type="button" onClick={() => playCustom('friendly')}>CHALLENGE A FRIEND</button>}
           <button className="text-button" type="button" onClick={() => { try { savePrivate(); } catch (error) { setStatus(error instanceof Error ? error.message : 'This passage is not ready yet.'); } }}>SAVE PRIVATELY</button>
         </div>
-        <div className="submission-box">
+        {!localOnly && <div className="submission-box">
           <div><small>PUBLIC LIBRARY REVIEW</small><b>Submit your passage to TypeRival</b><p>Every submission begins as pending. Approval does not happen automatically.</p></div>
           <label className="rights-check"><input type="checkbox" checked={rightsAttested} onChange={(event) => setRightsAttested(event.target.checked)} /><span>I wrote this passage or have permission to submit it, and it contains no private information.</span></label>
           <button className="secondary-button" type="submit" disabled={busy || !rightsAttested}>{busy ? 'SUBMITTING…' : signedIn ? 'SUBMIT FOR REVIEW' : 'SIGN IN TO SUBMIT'}</button>
-        </div>
+        </div>}
         {status && <div className="account-status" role="status">{status}</div>}
       </form>
 
@@ -260,9 +264,10 @@ function isSecureUrl(value: string) {
   }
 }
 
-function readPrivatePassages(): Passage[] {
+function readPrivatePassages(localOnly = false): Passage[] {
   try {
-    const stored = JSON.parse(window.localStorage.getItem(PRIVATE_PASSAGES_KEY) ?? '[]') as unknown;
+    const storageKey = localOnly ? PRIVATE_JUNIOR_PASSAGES_KEY : PRIVATE_PASSAGES_KEY;
+    const stored = JSON.parse(window.localStorage.getItem(storageKey) ?? '[]') as unknown;
     if (!Array.isArray(stored)) return [];
     return stored.flatMap((entry) => {
       if (!entry || typeof entry !== 'object') return [];
