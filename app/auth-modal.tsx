@@ -118,7 +118,7 @@ export default function AuthModal({ open, initialMode = 'signin', onClose, onAut
         <span className="wordmark-mark">TR</span>
         <span className="eyebrow">TYPERIVAL ACCOUNT</span>
         <h2 id="auth-title">{title}</h2>
-        <p>{mode === 'signup' ? 'Save your progress, enter Ranked, and build your 30-day record.' : mode === 'forgot' ? 'Enter the email connected to your account.' : mode === 'update' ? 'Your new password must contain at least 8 characters.' : 'Sign in to continue your verified history.'}</p>
+        <p>{mode === 'signup' ? 'Save your progress, enter Ranked Time Trials, and build your 30-day record.' : mode === 'forgot' ? 'Enter the email connected to your account.' : mode === 'update' ? 'Your new password must contain at least 8 characters.' : 'Sign in to continue your verified history.'}</p>
 
         {!configured && <div className="auth-config-note"><b>ACCOUNT SETUP PENDING</b><span>The interface is ready. Add the Supabase project URL and publishable key to activate it.</span></div>}
 

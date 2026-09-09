@@ -1,5 +1,5 @@
 # dependencies
-/node_modules
+node_modules/
 /.pnp
 .pnp.*
 .yarn/*
@@ -10,6 +10,8 @@
 
 # testing
 /coverage
+/playwright-report/
+/test-results/
 *.tsbuildinfo
 
 # next.js
@@ -39,3 +41,6 @@ next-env.d.ts
 /outputs/
 /work/
 /supabase/.temp/
+
+# Temporary local Academy coach; replace with an optimized, fully attributed asset before deployment.
+public/academy/miles.vrm

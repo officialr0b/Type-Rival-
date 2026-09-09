@@ -14,10 +14,10 @@ const contentSecurityPolicy = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
-  `connect-src 'self' https://*.supabase.co wss://*.supabase.co${realtimeEndpoint ? ` ${realtimeEndpoint}` : ''}${realtimeHttpEndpoint && realtimeHttpEndpoint !== realtimeEndpoint ? ` ${realtimeHttpEndpoint}` : ''}${process.env.NODE_ENV === 'development' ? ' ws://localhost:2567 http://localhost:2567' : ''}`,
+  `connect-src 'self' blob: https://*.supabase.co wss://*.supabase.co${realtimeEndpoint ? ` ${realtimeEndpoint}` : ''}${realtimeHttpEndpoint && realtimeHttpEndpoint !== realtimeEndpoint ? ` ${realtimeHttpEndpoint}` : ''}${process.env.NODE_ENV === 'development' ? ' ws://localhost:2567 http://localhost:2567' : ''}`,
   "manifest-src 'self'",
   "worker-src 'self' blob:",
-  'upgrade-insecure-requests',
+  ...(process.env.VERCEL ? ['upgrade-insecure-requests'] : []),
 ].join('; ');
 
 const securityHeaders = [

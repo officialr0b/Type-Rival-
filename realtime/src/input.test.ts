@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { applyLiveEdit, liveMetrics } from './input.js';
+import { applyLiveEdit, decideLiveWinner, insertedCharacters, liveMetrics } from './input.js';
 
 describe('live race input', () => {
   it('keeps paste blocked and swipe chunks bounded', () => {
@@ -33,5 +33,26 @@ describe('live race input', () => {
     const metrics = liveMetrics('clean line', 'clean line', 60_000, 10);
     assert.equal(metrics.wpm, 2);
     assert.equal(metrics.accuracy, 100);
+  });
+
+  it('counts inserted characters through corrections without rewarding deletions', () => {
+    assert.equal(insertedCharacters('rce', 'race'), 1);
+    assert.equal(insertedCharacters('race', 'rac'), 0);
+    assert.equal(insertedCharacters('quick path', 'quick race'), 4);
+  });
+
+  it('uses the accuracy gate before performance and still breaks sub-gate ties fairly', () => {
+    assert.equal(decideLiveWinner(
+      { accuracy: 91, performanceScore: 20 },
+      { accuracy: 89, performanceScore: 80 },
+    ), 'a');
+    assert.equal(decideLiveWinner(
+      { accuracy: 85, performanceScore: 30 },
+      { accuracy: 85, performanceScore: 20 },
+    ), 'a');
+    assert.equal(decideLiveWinner(
+      { accuracy: 98, performanceScore: 55 },
+      { accuracy: 98, performanceScore: 55 },
+    ), 'draw');
   });
 });

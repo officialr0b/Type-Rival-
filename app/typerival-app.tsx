@@ -1,9 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import Academy from './academy';
 import AuthModal from './auth-modal';
 import { InputDiagnosticOverlay, clearInputDiagnostics, recordInputDiagnostic } from './input-diagnostics';
-import LiveFriendly from './live-friendly';
+import PrivateRace from './live-friendly';
 import PassageStudio from './passage-studio';
 import {
   DEFAULT_LANGUAGE,
@@ -71,7 +72,7 @@ import {
   type Progression,
 } from '../lib/progression';
 
-type Screen = 'home' | 'setup' | 'race' | 'results' | 'leaderboard' | 'account' | 'legal' | 'feedback' | 'passages' | 'live';
+type Screen = 'home' | 'setup' | 'race' | 'results' | 'leaderboard' | 'account' | 'legal' | 'feedback' | 'passages' | 'live' | 'academy';
 type LeaderboardEntry = { handle: string; averageWpm: number; accuracy: number; sessions: number; rating: number };
 
 type Player = {
@@ -351,12 +352,15 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
         })
         .catch(() => setMessage('That challenge is unavailable or has expired.'));
     }
-    const requestedLiveRoom = params.get('live');
+    const requestedLiveRoom = params.get('race') ?? params.get('live');
     const liveTimer = window.setTimeout(() => {
       if (requestedLiveRoom && validAge !== 'under13') {
         setLiveRoomId(requestedLiveRoom);
         setScreen('live');
       }
+    }, 0);
+    const academyTimer = window.setTimeout(() => {
+      if (params.has('academy')) setScreen('academy');
     }, 0);
 
     const installHandler = (event: Event) => {
@@ -384,6 +388,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
       window.clearTimeout(initializeTimer);
       window.clearTimeout(authTimer);
       window.clearTimeout(liveTimer);
+      window.clearTimeout(academyTimer);
       window.removeEventListener('beforeinstallprompt', installHandler);
       subscription?.unsubscribe();
     };
@@ -438,7 +443,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     }
     if ((nextMode === 'ranked' || nextMode === 'friendly') && !bootstrap.user.signedIn) {
       setMessage(nextMode === 'ranked'
-        ? 'Sign in to bank a ranked run and receive a rating.'
+        ? 'Sign in to bank a Ranked Time Trial and receive a rating.'
         : 'Sign in to create a challenge link for a friend.');
       openAuth();
       return;
@@ -735,9 +740,15 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     window.requestAnimationFrame(() => window.scrollTo({ top: 0 }));
   };
 
-  const openLiveFriendly = () => {
+  const openAcademy = () => {
+    setScreen('academy');
+    window.history.replaceState({}, '', '/?academy=1');
+    window.requestAnimationFrame(() => window.scrollTo({ top: 0 }));
+  };
+
+  const openPrivateRace = () => {
     if (ageBand === 'under13') {
-      setMessage('Live Friendly is available for players 13 and older. Private practice is ready now.');
+      setMessage('Private Race is available for players 13 and older. Private practice is ready now.');
       return;
     }
     if (!bootstrap.user.signedIn) {
@@ -799,7 +810,8 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           language={language}
           onLanguage={changeLanguage}
           onMode={chooseMode}
-          onLive={openLiveFriendly}
+          onAcademy={openAcademy}
+          onLive={openPrivateRace}
           onPassageStudio={openPassageStudio}
           onLeaderboard={() => setScreen('leaderboard')}
           onSignIn={openAuth}
@@ -856,7 +868,8 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
       )}
 
       {screen === 'leaderboard' && !privateJunior && <Leaderboard data={bootstrap} language={language} onLanguage={changeLanguage} onBack={goHome} />}
-      {screen === 'live' && !privateJunior && <LiveFriendly initialRoomId={liveRoomId} inputPreference={inputPreference} mobileViewer={deviceClass === 'mobile'} ageBand={ageBand} signedIn={bootstrap.user.signedIn} onInputPreference={setInputPreference} onBack={goHome} onSignIn={openAuth} />}
+      {screen === 'live' && !privateJunior && <PrivateRace initialRoomId={liveRoomId} language={language} inputPreference={inputPreference} mobileViewer={deviceClass === 'mobile'} ageBand={ageBand} signedIn={bootstrap.user.signedIn} onInputPreference={setInputPreference} onBack={goHome} onSignIn={openAuth} />}
+      {screen === 'academy' && <Academy onBack={goHome} />}
       {screen === 'passages' && (
         <PassageStudio
           signedIn={bootstrap.user.signedIn}
@@ -959,7 +972,7 @@ function Header({ player, progression, juniorCareer, privateJunior, loading, onH
   );
 }
 
-function Home({ bootstrap, localStats, juniorCareer, ageBand, language, onLanguage, onMode, onLive, onLeaderboard, onPassageStudio, onSignIn }: {
+function Home({ bootstrap, localStats, juniorCareer, ageBand, language, onLanguage, onMode, onAcademy, onLive, onLeaderboard, onPassageStudio, onSignIn }: {
   bootstrap: Bootstrap;
   localStats: PracticeStats;
   juniorCareer: Progression | null;
@@ -967,6 +980,7 @@ function Home({ bootstrap, localStats, juniorCareer, ageBand, language, onLangua
   language: TypingLanguage;
   onLanguage: (language: TypingLanguage) => void;
   onMode: (mode: GameMode) => void;
+  onAcademy: () => void;
   onLive: () => void;
   onLeaderboard: () => void;
   onPassageStudio: () => void;
@@ -979,7 +993,7 @@ function Home({ bootstrap, localStats, juniorCareer, ageBand, language, onLangua
         <div>
           <span className="eyebrow">COMPETITIVE TYPING, BUILT FOR SPEED</span>
           <h1>Type fast.<br/><i>Stay clean.</i><br/>Own the race.</h1>
-          <p>Practice your speed, challenge a friend with one link, or bank a ranked run for a similarly skilled rival.</p>
+          <p>Train your technique in TypeRival Academy, practice your speed, challenge a friend, or meet a rival live.</p>
           <div className="hero-actions">
             <button className="primary-button" onClick={() => onMode('practice')}>START A 45-SECOND RUN</button>
             {ageBand === 'under13'
@@ -1013,17 +1027,26 @@ function Home({ bootstrap, localStats, juniorCareer, ageBand, language, onLangua
         <LanguageSelector language={language} onLanguage={onLanguage} />
         <div className="launch-mode-grid">
           <LaunchCard number="01" title="Practice" label="LIVE" description="Build speed, accuracy, XP, and your rolling 30-day average." action="PRACTICE NOW" onClick={() => onMode('practice')} featured />
-          <LaunchCard number="02" title="Ranked" label="ASYNC BETA" description="Bank one standardized run. We pair it with a rival on the same passage." action="RACE A RIVAL" onClick={() => onMode('ranked')} disabled={ageBand === 'under13'} />
-          <LaunchCard number="03" title="Friendly" label="ASYNC" description="Set a score, copy the challenge link, and send it to anyone." action="CREATE A CHALLENGE" onClick={() => onMode('friendly')} disabled={ageBand === 'under13'} />
-          <LaunchCard number="04" title="Live Friendly" label="COLYSEUS ALPHA" description="Meet a rival in a private room and race on the same 45-second clock." action="OPEN LIVE ARENA" onClick={onLive} disabled={ageBand === 'under13'} />
-          <LaunchCard number="05" title="Passage Studio" label="NEW" description="Choose a subject, learn while you type, or bring your own passage." action="OPEN THE STUDIO" onClick={onPassageStudio} />
+          <LaunchCard number="02" title="TypeRival Academy" label="NEW · COACHED" description="Learn proper technique with guided lessons, live finger cues, and adaptive drills led by Miles." action="ENTER THE ACADEMY" onClick={onAcademy} />
+          <LaunchCard number="03" title="Ranked Time Trial" label="ASYNC BETA" description="Bank one standardized run. We pair it with a similarly skilled rival on the same passage." action="BANK A RANKED RUN" onClick={() => onMode('ranked')} disabled={ageBand === 'under13'} />
+          <LaunchCard number="04" title="Challenge Link" label="ASYNC" description="Set a score, copy the link, and let a friend race whenever they are ready." action="CREATE A CHALLENGE" onClick={() => onMode('friendly')} disabled={ageBand === 'under13'} />
+          <LaunchCard
+            number="05"
+            title="Private Race"
+            label="LIVE · COLYSEUS ALPHA"
+            description="Meet a rival in a private room and race on the same server-controlled 45-second clock."
+            action="OPEN PRIVATE RACE"
+            onClick={onLive}
+            disabled={ageBand === 'under13'}
+          />
+          <LaunchCard number="06" title="Passage Studio" label="NEW" description="Choose a subject, learn while you type, or bring your own passage." action="OPEN THE STUDIO" onClick={onPassageStudio} />
         </div>
       </section>
 
       {bootstrap.latestRanked && (
         <section className="ranked-status">
           <span className="status-light" />
-          <p><b>Latest ranked run:</b> {bootstrap.latestRanked.matchStatus === 'matched'
+          <p><b>Latest Ranked Time Trial:</b> {bootstrap.latestRanked.matchStatus === 'matched'
             ? `${bootstrap.latestRanked.outcome?.toUpperCase()} · ${formatDelta(bootstrap.latestRanked.ratingDelta)}`
             : 'Banked and waiting for a compatible rival.'}</p>
         </section>
@@ -1177,12 +1200,13 @@ function Setup({ mode, durationSec, challenge, language, category, passage, inpu
   const custom = isCustomPassage(passage);
   const categoryOptions = PASSAGE_CATEGORIES.filter((option) => option.code === 'all'
     || passagesForLanguage(language).some((candidate) => candidate.category === option.code));
-  const title = mode === 'ranked' ? 'Bank a ranked run.' : mode === 'friendly' ? 'Set the score to beat.' : mode === 'challenge' ? `${challenge?.creatorHandle ?? 'A rival'} called you out.` : 'Set the clock. Find your flow.';
+  const title = mode === 'ranked' ? 'Bank a Ranked Time Trial.' : mode === 'friendly' ? 'Build a Challenge Link.' : mode === 'challenge' ? `${challenge?.creatorHandle ?? 'A rival'} called you out.` : 'Set the clock. Find your flow.';
+  const modeLabel = mode === 'ranked' ? 'RANKED TIME TRIAL' : mode === 'friendly' || mode === 'challenge' ? 'CHALLENGE LINK' : 'PRACTICE';
   return (
     <main className="setup-page game-page">
       <section className="setup-copy">
         <button className="back-button" onClick={onBack}>← BACK</button>
-        <span className="eyebrow">{mode.toUpperCase()} MODE</span>
+        <span className="eyebrow">{modeLabel}</span>
         <h1>{title}</h1>
         <p>{mode === 'ranked'
           ? 'Your server-verified 45-second result will be paired with another signed-in player on the same passage.'
@@ -1217,7 +1241,7 @@ function Setup({ mode, durationSec, challenge, language, category, passage, inpu
             <button className={inputPreference === 'tap' ? 'selected' : ''} aria-pressed={inputPreference === 'tap'} onClick={() => onInputPreference('tap')}><b>TAP</b><small>ONE KEY AT A TIME</small></button>
             <button className={inputPreference === 'swipe' ? 'selected' : ''} aria-pressed={inputPreference === 'swipe'} onClick={() => onInputPreference('swipe')}><b>SWIPE</b><small>WORD GESTURES</small></button>
           </div>
-          <p>Connected keyboards are detected automatically. Ranked results are placed on the board that matches the input observed during the run.</p>
+          <p>Connected keyboards are detected automatically. Ranked Time Trial results are placed on the board that matches the input observed during the run.</p>
         </div> : <div className="setup-row"><span><small>INPUT</small><b>Physical keyboard</b></span><em>AUTOMATIC</em></div>}
         <button className="primary-button setup-start" onClick={onStart} disabled={starting}>{starting ? 'AUTHORIZING RUN…' : `START ${durationSec}-SECOND RUN`}</button>
       </section>
@@ -1553,7 +1577,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
 
     const handleKeyDown = (event: KeyboardEvent) => {
       recordInputDiagnostic('standard:key', event, field);
-      if (inputPreference === 'swipe') return;
+      if (inputPreference === 'swipe' || !activeRef.current || finished.current) return;
       const edit = physicalKeyEdit(event.key, event);
       if (!edit) return;
       event.preventDefault();
@@ -1568,14 +1592,17 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
 
     field.addEventListener('beforeinput', handleBeforeInput);
     field.addEventListener('input', handleInput);
-    field.addEventListener('keydown', handleKeyDown);
+    // Capture hardware keys at the window boundary so a browser-specific focus
+    // change cannot make an active race appear unresponsive. Mobile keyboards
+    // continue through beforeinput/input and are unaffected by this fallback.
+    window.addEventListener('keydown', handleKeyDown, true);
     field.addEventListener('compositionstart', handleComposition);
     field.addEventListener('compositionupdate', handleComposition);
     field.addEventListener('compositionend', handleComposition);
     return () => {
       field.removeEventListener('beforeinput', handleBeforeInput);
       field.removeEventListener('input', handleInput);
-      field.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keydown', handleKeyDown, true);
       field.removeEventListener('compositionstart', handleComposition);
       field.removeEventListener('compositionupdate', handleComposition);
       field.removeEventListener('compositionend', handleComposition);
@@ -1740,7 +1767,7 @@ function Results({ result, saving, signedIn, privateJunior, playerHandle, messag
       <section className="result-copy">
         <span className="eyebrow">{saving ? 'SERVER CHECK' : outcome ? `${outcome.toUpperCase()} · HEAD-TO-HEAD` : 'RUN COMPLETE'}</span>
         <h1>{headline}</h1>
-        <p>{privateJunior ? 'Your result and coaching are saved privately in this browser. Nothing from this run enters TypeRival’s database or public leaderboards.' : custom ? 'Custom-passage results are unverified training: they do not change XP, ratings, verified averages, or public leaderboards.' : result.riskStatus === 'review' ? 'This run is held for integrity review and will not reach public rankings yet.' : result.saved ? 'Your result passed validation and your progress is saved.' : signedIn ? message || 'This result stayed local.' : 'Sign in to save XP, history, and ranked results.'}</p>
+        <p>{privateJunior ? 'Your result and coaching are saved privately in this browser. Nothing from this run enters TypeRival’s database or public leaderboards.' : custom ? 'Custom-passage results are unverified training: they do not change XP, ratings, verified averages, or public leaderboards.' : result.riskStatus === 'review' ? 'This run is held for integrity review and will not reach public rankings yet.' : result.saved ? 'Your result passed validation and your progress is saved.' : signedIn ? message || 'This result stayed local.' : 'Sign in to save XP, history, and Ranked Time Trial results.'}</p>
         <div className="reward-card"><span><small>{custom ? 'CUSTOM TRAINING' : privateJunior ? 'LOCAL PRACTICE REWARD' : 'SESSION REWARD'}</small><b>+{result.xpEarned + (result.missionBonusXp ?? 0)} XP</b></span><em>{custom ? 'UNVERIFIED' : privateJunior ? 'DEVICE ONLY' : result.xpMultiplier === 2 ? '2× APPLIED' : result.saved ? 'SAVED' : 'LOCAL'}</em></div>
         {(result.missionBonusXp ?? 0) > 0 && <div className="mission-earned"><b>MISSION COMPLETE · +{result.missionBonusXp} XP</b><span>{result.progression?.newlyCompleted.map((key) => missionTitle(key)).join(' · ')}</span></div>}
         {result.progression && <ResultProgress progression={result.progression} />}
@@ -1749,7 +1776,7 @@ function Results({ result, saving, signedIn, privateJunior, playerHandle, messag
         {result.mode === 'ranked' && result.match?.status === 'pending' && <div className="pending-match"><i />Result banked. We’ll pair it with the next compatible rival.</div>}
         {result.mode === 'friendly' && !result.friendlyMatch && <div className="pending-match"><i />Challenge ready. This screen updates when your rival finishes.</div>}
         {result.match?.status === 'matched' && <div className="pending-match"><i />vs. {result.match.opponentHandle} · {formatDelta(result.match.ratingDelta)} rating</div>}
-        {result.friendlyMatch && <div className="pending-match"><i />vs. {result.friendlyMatch.opponentHandle} · friendly result complete</div>}
+        {result.friendlyMatch && <div className="pending-match"><i />vs. {result.friendlyMatch.opponentHandle} · Challenge Link complete</div>}
         {!signedIn && !privateJunior && <button className="text-button result-signin" onClick={onSignIn}>SIGN IN TO START YOUR VERIFIED HISTORY →</button>}
       </section>
       <section className="result-performance">
@@ -1955,10 +1982,10 @@ function Leaderboard({ data, language, onLanguage, onBack }: {
   const entries = board === 'open'
     ? data.openLeaderboards[inputMethod] ?? []
     : data.rankedLeaderboards[inputMethod] ?? [];
-  const title = board === 'open' ? 'Practice leaderboard' : 'Ranked leaderboard';
+  const title = board === 'open' ? 'Practice leaderboard' : 'Ranked Time Trial leaderboard';
   const description = board === 'open'
     ? 'You can hit the leaderboard as soon as your first run is complete. Clear, signed-in results count toward your rolling 30-day averages in the matching input lane.'
-    : '45-second ranked runs only. Tap, swipe, and hardware input each have a fair lane.';
+    : '45-second Ranked Time Trials only. Tap, swipe, and hardware input each have a fair lane.';
 
   return (
     <main className="leaderboard-page">
@@ -1966,15 +1993,15 @@ function Leaderboard({ data, language, onLanguage, onBack }: {
       <LanguageSelector language={language} onLanguage={onLanguage} compact />
       <nav className="leaderboard-tabs" aria-label="Leaderboard type">
         <button className={board === 'open' ? 'selected' : ''} aria-pressed={board === 'open'} onClick={() => setBoard('open')}>PRACTICE</button>
-        <button className={board === 'ranked' ? 'selected' : ''} aria-pressed={board === 'ranked'} onClick={() => setBoard('ranked')}>RANKED</button>
+        <button className={board === 'ranked' ? 'selected' : ''} aria-pressed={board === 'ranked'} onClick={() => setBoard('ranked')}>RANKED TIME TRIAL</button>
       </nav>
       <nav className="leaderboard-subtabs" aria-label={`${title} input method`}>
         <button className={inputMethod === 'mobile_touch' ? 'selected' : ''} aria-pressed={inputMethod === 'mobile_touch'} onClick={() => setInputMethod('mobile_touch')}>MOBILE TOUCH</button>
         <button className={inputMethod === 'mobile_swipe' ? 'selected' : ''} aria-pressed={inputMethod === 'mobile_swipe'} onClick={() => setInputMethod('mobile_swipe')}>MOBILE SWIPE</button>
         <button className={inputMethod === 'hardware' ? 'selected' : ''} aria-pressed={inputMethod === 'hardware'} onClick={() => setInputMethod('hardware')}>DESKTOP / HARDWARE</button>
       </nav>
-      <p className="leaderboard-note">TypeRival classifies the input actually observed during each run. Connected iPad and tablet keyboards join the hardware lane.{board === 'ranked' ? ' Rating remains unified during the async Ranked beta.' : ''}</p>
-      <LeaderboardTable entries={entries} emptyLabel={`Complete a signed-in ${inputMethodLabel(inputMethod).toLowerCase()} ${board === 'ranked' ? 'Ranked ' : ''}run to claim the first spot.`} />
+      <p className="leaderboard-note">TypeRival classifies the input actually observed during each run. Connected iPad and tablet keyboards join the hardware lane.{board === 'ranked' ? ' Rating remains unified during the async Ranked Time Trial beta.' : ''}</p>
+      <LeaderboardTable entries={entries} emptyLabel={`Complete a signed-in ${inputMethodLabel(inputMethod).toLowerCase()} ${board === 'ranked' ? 'Ranked Time Trial ' : ''}run to claim the first spot.`} />
     </main>
   );
 }
@@ -2071,7 +2098,7 @@ function Account({ player, onBack, onUpdated, onDeleted }: {
         </section>
         <section className="account-card">
           <h2>Your data</h2>
-          <p>Download a JSON copy of your profile, saved runs, Practice coaching history, mission rewards, friendly challenges, challenge attempts, feedback, and passage submissions.</p>
+          <p>Download a JSON copy of your profile, saved runs, Practice coaching history, mission rewards, Challenge Links, challenge attempts, feedback, and passage submissions.</p>
           <button className="secondary-button" onClick={() => void downloadExport()} disabled={busy}>DOWNLOAD MY DATA</button>
         </section>
         <section className="account-card danger-card">
@@ -2100,7 +2127,7 @@ function Legal({ onBack }: { onBack: () => void }) {
         <article><h2>Sharing and processors</h2><p>Supabase processes authentication and database data, while Vercel hosts the web application and operational logs. Google processes information when Google sign-in is selected. Data may also be disclosed when required by law or necessary to protect users and the service.</p></article>
         <article><h2>Retention and control</h2><p>Saved gameplay and signed-in coaching history remain while an account is active unless operational or legal needs require a different period. Players can download their TypeRival data and permanently delete their account from the Account page. Guest and under-13 coaching history stays on the device and can be removed by clearing browser site data.</p></article>
         <article><h2>Security and availability</h2><p>TypeRival uses access controls, server validation, encrypted network connections, and rate limits, but no online service can guarantee absolute security or uninterrupted availability. The beta may change, pause, or remove features as it develops.</p></article>
-        <article><h2>Challenges and conduct</h2><p>Friendly links expire after seven days and may be shared by anyone who receives them. Challenge results do not change ranked rating. Do not use handles or shared links to impersonate, harass, threaten, or expose another person’s private information.</p></article>
+        <article><h2>Challenges and conduct</h2><p>Challenge Links expire after seven days and may be shared by anyone who receives them. Challenge results do not change ranked rating. Do not use handles or shared links to impersonate, harass, threaten, or expose another person’s private information.</p></article>
         <article><h2>Passage Studio</h2><p>Custom passages are unverified training and do not affect XP, verified averages, public leaderboards, boosts, or rating. Public submissions require you to confirm that you wrote the text or have permission to submit it. Do not submit private information, unlawful material, harassment, or copyrighted text you do not have permission to use. TypeRival may review, reject, edit, or remove submissions.</p></article>
         <article><h2>Account enforcement</h2><p>Accounts or results may be limited or removed for cheating, abuse, unlawful conduct, security threats, or repeated violations. Players remain responsible for activity performed through their account and should protect their sign-in credentials.</p></article>
         <article><h2>Future prizes</h2><p>Any future sponsor-funded skill event will launch separately with official rules, eligibility and identity checks, jurisdiction controls, tax disclosures, and professional legal review. No prize event is active today.</p></article>

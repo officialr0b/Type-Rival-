@@ -1,17 +1,17 @@
 # Colyseus evaluation for TypeRival
 
-Updated August 28, 2026.
+Updated September 8, 2026.
 
 ## Decision
 
-Do not replace the current asynchronous MVP backend with Colyseus yet.
+Keep Colyseus for live play without replacing the asynchronous MVP backend.
 
-Colyseus is a strong fit for a future **live two-player mode** with synchronized countdowns, live opponent progress, room-level server authority, reconnect support, spectators, and rating-based queues. The existing Practice, banked Ranked runs, and shareable Friendly links are request/response workflows; moving them to persistent rooms now would add cost and operational risk without improving the launch-critical experience.
+The first server-authoritative Colyseus mode now ships in the codebase as **Private Race (alpha)**. It provides synchronized countdowns, live opponent progress, server-validated typing, protected identity data, and a mobile reconnection window. Practice, Ranked Time Trial, and Challenge Link remain request/response workflows; moving those modes into persistent rooms would add cost and operational risk without improving them.
 
 ## Where Colyseus would help
 
 - A server-authoritative 45-second Live Ranked room
-- Live Friendly rooms with invite IDs
+- Private Race rooms with invite IDs
 - A built-in Queue Room with rating compatibility and waiting-priority rules
 - Lobby and room-browser experiences
 - Automatic room-state synchronization with property-level patches
@@ -38,15 +38,16 @@ Colyseus 0.18 also adds input buffering, fixed-timestep server simulation, clien
 
 Vercel added native WebSocket support in public beta in June 2026. Connections remain pinned to a Function for its maximum duration, and durable state across instances requires Redis. A 45-second match can fit technically, but queue time, reconnect windows, deployment limits, beta behavior, and serious-esport reliability make a separate always-on Colyseus service the safer long-term design.
 
-Recommended rollout:
+Rollout status and recommendation:
 
 1. Keep Next.js/Vercel and Supabase as the system of record.
-2. Build a small Live Friendly proof of concept as a separate Colyseus 0.18 service.
-3. Validate Supabase JWTs in `static onAuth`.
-4. Persist only finalized results to the existing Supabase schema.
-5. Add Redis Presence before running multiple Colyseus processes.
-6. Load-test mobile reconnection, duplicate input, clock drift, and room recovery.
-7. Promote the service to Live Ranked only after the asynchronous MVP is stable.
+2. Continue testing the Private Race alpha as a separate Colyseus 0.18 service. **Implemented.**
+3. Validate Supabase JWTs before admitting a player to a room. **Implemented.**
+4. Keep alpha results session-only until abuse controls and result verification are production-ready. **Implemented.**
+5. Add durable finalized-result persistence and idempotency before XP or ratings are awarded.
+6. Add Redis Presence before running multiple Colyseus processes.
+7. Load-test mobile reconnection, duplicate input, clock drift, disconnect forfeits, and room recovery.
+8. Add rating-based queues and promote Colyseus to Live Ranked only after production soak testing passes.
 
 ## Sources
 

@@ -74,7 +74,7 @@ export const MISSION_DEFINITIONS: readonly MissionDefinition[] = [
     key: 'weekly-open-challenge',
     cadence: 'weekly',
     title: 'Open Challenge',
-    description: 'Complete 1 verified Friendly run.',
+    description: 'Complete 1 verified Challenge Link run.',
     target: 1,
     xpReward: 75,
   },

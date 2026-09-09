@@ -62,6 +62,20 @@ export function applyLiveEdit(current: string, edit: LiveEdit, maxLength: number
   return current + characters.slice(0, remaining).join('');
 }
 
+export function insertedCharacters(previousValue: string, nextValue: string): number {
+  const previous = Array.from(previousValue);
+  const next = Array.from(nextValue);
+  let prefix = 0;
+  while (prefix < previous.length && prefix < next.length && previous[prefix] === next[prefix]) prefix += 1;
+  let suffix = 0;
+  while (
+    suffix < previous.length - prefix
+    && suffix < next.length - prefix
+    && previous[previous.length - 1 - suffix] === next[next.length - 1 - suffix]
+  ) suffix += 1;
+  return Math.max(0, next.length - prefix - suffix);
+}
+
 export function liveMetrics(passage: string, input: string, elapsedMs: number, totalTypedChars: number) {
   const expected = Array.from(passage);
   const actual = Array.from(input);
@@ -78,5 +92,18 @@ export function liveMetrics(passage: string, input: string, elapsedMs: number, t
     accuracy,
     errors,
     totalTypedChars,
+    performanceScore: Math.max(0, (correctChars / 5 - errors) / minutes)
+      * (0.7 + 0.3 * Math.max(0, Math.min(1, (accuracy / 100 - 0.8) / 0.18))),
   };
+}
+
+type LiveScore = Pick<ReturnType<typeof liveMetrics>, 'accuracy' | 'performanceScore'>;
+
+export function decideLiveWinner(a: LiveScore, b: LiveScore): 'a' | 'b' | 'draw' {
+  const aClearsGate = a.accuracy >= 90;
+  const bClearsGate = b.accuracy >= 90;
+  if (aClearsGate !== bClearsGate) return aClearsGate ? 'a' : 'b';
+  if (a.performanceScore !== b.performanceScore) return a.performanceScore > b.performanceScore ? 'a' : 'b';
+  if (a.accuracy !== b.accuracy) return a.accuracy > b.accuracy ? 'a' : 'b';
+  return 'draw';
 }
