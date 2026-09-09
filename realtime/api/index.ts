@@ -19,6 +19,8 @@ const gameServer = new Server({
     app.get('/health', (_request, response) => response.json({ ok: true, transport: 'colyseus-websocket' }));
   },
 });
+gameServer.define('private_race', LiveTypingRoom);
+// Keep rooms created by the earlier web client working while that deployment ages out.
 gameServer.define('live_friendly', LiveTypingRoom);
 
 const serverlessHandler = process.env.VERCEL ? await gameServer.serverless() : undefined;

@@ -1,8 +1,10 @@
 # TypeRival
 
-TypeRival is a competitive typing web app built for touchscreens and physical keyboards. The MVP includes Practice, asynchronous Ranked head-to-head, Friendly challenge links, language-aware rolling 30-day leaderboards, a ten-level Rival Career, daily and weekly missions, temporary double-XP rewards, and Passage Studio. Players can choose English, Spanish, French, German, Portuguese, or Italian passage libraries; English remains the default.
+TypeRival is a competitive typing web app built for touchscreens and physical keyboards. The MVP includes Practice, TypeRival Academy, asynchronous Ranked Time Trials, asynchronous Challenge Links, live Private Races powered by Colyseus, language-aware rolling 30-day leaderboards, a ten-level Rival Career, daily and weekly missions, temporary double-XP rewards, and Passage Studio. Players can choose US English, UK English, Spanish, French, German, Portuguese, or Italian passage libraries; US English remains the default.
 
 Passage Studio adds reviewed English learning passages across ten subjects, private device-only passages, custom friend challenges, and a moderated public-submission workflow. Custom-passage results are unverified and deliberately excluded from XP, boosts, verified averages, public leaderboards, and Ranked rating. Curated learning passages use the normal verified Practice and competition rules.
+
+TypeRival Academy starts with six guided touch-typing lessons, live key and finger cues, form checklists, adaptive repetition of missed keys, rhythm and accuracy review, and device-only progress. Its Three.js coach stage lazy-loads Miles only inside Academy and falls back cleanly when the 3D asset or WebGL is unavailable. See [docs/miles-vrm-audit.md](docs/miles-vrm-audit.md) and [public/academy/README.md](public/academy/README.md) before changing or deploying the coach asset.
 
 ## Production architecture
 
@@ -10,7 +12,7 @@ Passage Studio adds reviewed English learning passages across ten subjects, priv
 - **Accounts:** Supabase Auth with Google and email/password
 - **Game API:** Supabase Edge Function behind same-origin Next.js route handlers
 - **Data:** Supabase PostgreSQL with RLS, service-only tables, database aggregation, and atomic match functions
-- **Realtime:** Not required for the current asynchronous modes. See [docs/colyseus-evaluation.md](docs/colyseus-evaluation.md).
+- **Realtime:** Colyseus powers invite-only Private Races with server-authoritative input, timing, scoring, disconnect recovery, and forfeit handling. Ranked Time Trials and Challenge Links remain asynchronous. See [docs/colyseus-evaluation.md](docs/colyseus-evaluation.md).
 
 The browser never receives a Supabase service-role key. Saved runs require a request-scoped authenticated user, a server-issued run ticket, a server-started clock, and a one-use submission.
 

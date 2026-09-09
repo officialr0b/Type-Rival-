@@ -814,7 +814,7 @@ function storedSessionMetrics(row: Record<string, unknown>) {
 }
 
 async function createChallenge(request: Request, user: User | null) {
-  if (!user) return json({ error: 'Sign in to create a friendly challenge.' }, 401);
+  if (!user) return json({ error: 'Sign in to create a Challenge Link.' }, 401);
   const body = await request.json() as {
     sessionId?: string;
     passageId?: string;
@@ -833,7 +833,7 @@ async function createChallenge(request: Request, user: User | null) {
     };
   };
   if (body.ageBand !== 'teen' && body.ageBand !== 'adult') {
-    return json({ error: 'Friendly challenges are available for players 13 and older.' }, 403);
+    return json({ error: 'Challenge Links are available for players 13 and older.' }, 403);
   }
   const durationSec = Number(body.durationSec);
   const input = typeof body.input === 'string' ? body.input.slice(0, 2_000) : '';
@@ -977,7 +977,7 @@ async function attemptChallenge(request: Request, code: string, user: User | nul
     ageBand?: 'under13' | 'teen' | 'adult';
   };
   if (body.ageBand !== 'teen' && body.ageBand !== 'adult') {
-    return json({ error: 'Friendly challenges are available for players 13 and older.' }, 403);
+    return json({ error: 'Challenge Links are available for players 13 and older.' }, 403);
   }
   const input = typeof body.input === 'string' ? body.input.slice(0, 2_000) : '';
   const elapsedMs = Number(body.elapsedMs);
