@@ -9,10 +9,10 @@ import {
   FINGER_LABELS,
   academyCoachTip,
   academyFingerForKey,
-  addAdaptiveRepeat,
   calculateAcademySummary,
   displayAcademyKey,
   emptyAcademyProgress,
+  firstIncompleteAcademyStage,
   normalizeAcademyInput,
   parseAcademyProgress,
   recordAcademyLesson,
@@ -45,6 +45,7 @@ const MODEL_URL = process.env.NEXT_PUBLIC_ACADEMY_MODEL_URL;
 export default function Academy({ onBack }: { onBack: () => void }) {
   const [phase, setPhase] = useState<AcademyPhase>('catalog');
   const [lesson, setLesson] = useState<AcademyLesson>(ACADEMY_LESSONS[0]);
+  const [stageIndex, setStageIndex] = useState(0);
   const [setupChecks, setSetupChecks] = useState<boolean[]>([]);
   const [queue, setQueue] = useState<string[]>([]);
   const [index, setIndex] = useState(0);
@@ -74,15 +75,25 @@ export default function Academy({ onBack }: { onBack: () => void }) {
     phaseRef.current = phase;
   }, [phase]);
 
+  const activeStage = lesson.stages[stageIndex] ?? lesson.stages[0]!;
   const activeKey = phase === 'drill' ? queue[index] ?? 'f' : lesson.focusKeys[0] ?? 'f';
   const activeFinger = academyFingerForKey(activeKey);
   const completedCount = useMemo(
     () => ACADEMY_LESSONS.filter((item) => progress.lessons[item.id]?.completed).length,
     [progress],
   );
+  const completedStageCount = useMemo(
+    () => ACADEMY_LESSONS.reduce((total, item) => total + (progress.lessons[item.id]?.completedStages.length ?? 0), 0),
+    [progress],
+  );
+  const totalStageCount = useMemo(
+    () => ACADEMY_LESSONS.reduce((total, item) => total + item.stages.length, 0),
+    [],
+  );
 
   const chooseLesson = (nextLesson: AcademyLesson) => {
     setLesson(nextLesson);
+    setStageIndex(firstIncompleteAcademyStage(nextLesson, progress.lessons[nextLesson.id]));
     setSetupChecks(nextLesson.setupChecks.map(() => false));
     setSummary(null);
     setCoachLine(nextLesson.coachIntro);
@@ -90,7 +101,7 @@ export default function Academy({ onBack }: { onBack: () => void }) {
   };
 
   const beginDrill = () => {
-    const normalized = normalizeAcademyInput(lesson.drill);
+    const normalized = normalizeAcademyInput(activeStage.drill);
     drillRef.current = { queue: normalized, index: 0, attempts: 0, correct: 0, streak: 0, longestStreak: 0 };
     setQueue(normalized);
     setIndex(0);
@@ -119,22 +130,24 @@ export default function Academy({ onBack }: { onBack: () => void }) {
       elapsedMs: Math.max(1, performance.now() - startedAtRef.current),
       intervals: intervalsRef.current,
       errors: errorsRef.current,
-      lesson,
+      stage: activeStage,
     });
     setSummary(result);
     setCoachLine(result.passed
-      ? 'That was controlled and repeatable. You are ready for the next movement pattern.'
+      ? stageIndex === lesson.stages.length - 1
+        ? 'That was controlled and repeatable. This lesson is mastered.'
+        : `${activeStage.label} cleared. The next stage will add another layer of control.`
       : result.weakKeys[0]
         ? `${displayAcademyKey(result.weakKeys[0].key)} needs another calm pass. Accuracy comes before speed.`
         : 'Good first pass. Repeat it once more and make the rhythm smoother.');
     setProgress((current) => {
-      const next = recordAcademyLesson(current, lesson, result, completedAt);
+      const next = recordAcademyLesson(current, lesson, activeStage, result, completedAt);
       window.localStorage.setItem(ACADEMY_STORAGE_KEY, JSON.stringify(next));
       return next;
     });
     phaseRef.current = 'summary';
     setPhase('summary');
-  }, [lesson]);
+  }, [activeStage, lesson, stageIndex]);
 
   const enterKey = useCallback((rawKey: string) => {
     if (phaseRef.current !== 'drill') return;
@@ -151,10 +164,8 @@ export default function Academy({ onBack }: { onBack: () => void }) {
       session.streak = 0;
       setStreak(0);
       setCoachLine(academyCoachTip(expected, misses));
-      if (session.queue.length < 140) {
-        session.queue = addAdaptiveRepeat(session.queue, session.index, expected);
-        setQueue(session.queue);
-      }
+      // Keep the authored drill immutable. The missed key remains active until
+      // it is corrected, so the movement repeats without corrupting the word.
       return;
     }
 
@@ -208,6 +219,19 @@ export default function Academy({ onBack }: { onBack: () => void }) {
     chooseLesson(next);
   };
 
+  const continueAfterStage = () => {
+    if (stageIndex < lesson.stages.length - 1) {
+      setStageIndex((current) => current + 1);
+      setSetupChecks(lesson.setupChecks.map(() => false));
+      setSummary(null);
+      setCoachLine(`Next up: ${lesson.stages[stageIndex + 1]!.title}.`);
+      phaseRef.current = 'briefing';
+      setPhase('briefing');
+      return;
+    }
+    nextLesson();
+  };
+
   return (
     <main className="academy-page">
       <header className="academy-heading">
@@ -215,12 +239,12 @@ export default function Academy({ onBack }: { onBack: () => void }) {
           <button className="back-button" onClick={phase === 'catalog' ? onBack : showCatalog}>← {phase === 'catalog' ? 'BACK HOME' : 'ALL LESSONS'}</button>
           <span className="eyebrow">TYPE RIVAL ACADEMY · MVP</span>
           <h1>Learn the motion.<br/><i>Unlock the speed.</i></h1>
-          <p>Miles coaches the key, finger, posture, and rhythm behind faster typing. Lessons adapt by repeating the movements you miss.</p>
+          <p>Miles coaches the key, finger, posture, and rhythm behind faster typing through an 18-stage path. A missed key stays active until you correct the movement—the lesson text never changes underneath you.</p>
         </div>
         <div className="academy-overview" aria-label="Academy progress">
-          <span><small>CURRICULUM</small><b>{completedCount}/{ACADEMY_LESSONS.length}</b><em>lessons mastered</em></span>
+          <span><small>MASTERY</small><b>{completedStageCount}/{totalStageCount}</b><em>stages cleared</em></span>
+          <span><small>LESSONS</small><b>{completedCount}/{ACADEMY_LESSONS.length}</b><em>fully mastered</em></span>
           <span><small>DRILLS</small><b>{progress.totalDrills}</b><em>completed here</em></span>
-          <span><small>PRIVACY</small><b>LOCAL</b><em>this device only</em></span>
         </div>
       </header>
 
@@ -237,20 +261,22 @@ export default function Academy({ onBack }: { onBack: () => void }) {
 
         {phase === 'catalog' && (
           <div className="academy-catalog">
-            <div className="academy-section-title"><span>GUIDED PATH</span><small>ALL LESSONS ARE OPEN · START AT YOUR LEVEL</small></div>
+            <div className="academy-section-title"><span>18-STAGE GUIDED PATH</span><small>LEARN · BUILD · MASTER</small></div>
             <div className="academy-lesson-grid">
               {ACADEMY_LESSONS.map((item) => {
                 const saved = progress.lessons[item.id];
+                const stagesComplete = saved?.completedStages.length ?? 0;
+                const finalStage = item.stages[item.stages.length - 1]!;
                 return <article key={item.id} className={saved?.completed ? 'complete' : ''}>
-                  <div className="academy-lesson-meta"><span>{String(item.order).padStart(2, '0')}</span><em>{saved?.completed ? 'MASTERED' : item.level.toUpperCase()}</em></div>
+                  <div className="academy-lesson-meta"><span>{String(item.order).padStart(2, '0')}</span><em>{saved?.completed ? 'MASTERED' : `${stagesComplete}/${item.stages.length} STAGES`}</em></div>
                   <h2>{item.title}</h2>
                   <p>{item.description}</p>
                   <dl>
                     <div><dt>TIME</dt><dd>{item.duration}</dd></div>
-                    <div><dt>TARGET</dt><dd>{item.passAccuracy}% accuracy</dd></div>
+                    <div><dt>TARGET</dt><dd>{finalStage.passAccuracy}% accuracy</dd></div>
                     <div><dt>BEST</dt><dd>{saved ? `${saved.bestAccuracy.toFixed(1)}%` : '—'}</dd></div>
                   </dl>
-                  <button aria-label={`${saved ? 'Practice' : 'Start'} ${item.title} lesson`} className={item.order === 1 && !saved ? 'primary-button' : 'secondary-button'} onClick={() => chooseLesson(item)}>{saved ? 'PRACTICE AGAIN' : 'START LESSON'}</button>
+                  <button aria-label={`${saved ? 'Continue' : 'Start'} ${item.title} lesson`} className={item.order === 1 && !saved ? 'primary-button' : 'secondary-button'} onClick={() => chooseLesson(item)}>{saved?.completed ? 'PRACTICE PEAK STAGE' : saved ? 'CONTINUE LESSON' : 'START LESSON'}</button>
                 </article>;
               })}
             </div>
@@ -259,9 +285,12 @@ export default function Academy({ onBack }: { onBack: () => void }) {
 
         {phase === 'briefing' && (
           <div className="academy-briefing">
-            <span className="academy-step">LESSON {String(lesson.order).padStart(2, '0')} · {lesson.level.toUpperCase()}</span>
+            <span className="academy-step">LESSON {String(lesson.order).padStart(2, '0')} · STAGE {stageIndex + 1} OF {lesson.stages.length} · {activeStage.label.toUpperCase()}</span>
             <h2>{lesson.title}</h2>
-            <p>{lesson.goal}</p>
+            <div className="academy-stage-brief">
+              <b>{activeStage.title}</b>
+              <p>{activeStage.goal}</p>
+            </div>
             <div className="academy-focus-keys" aria-label="Lesson focus keys">
               {lesson.focusKeys.map((key) => <kbd key={key}>{displayAcademyKey(key)}</kbd>)}
             </div>
@@ -278,7 +307,7 @@ export default function Academy({ onBack }: { onBack: () => void }) {
                 </label>
               ))}
             </fieldset>
-            <button className="primary-button academy-begin" onClick={beginDrill} disabled={!setupChecks.every(Boolean)}>BEGIN GUIDED DRILL</button>
+            <button className="primary-button academy-begin" onClick={beginDrill} disabled={!setupChecks.every(Boolean)}>BEGIN {activeStage.label.toUpperCase()} DRILL</button>
             {!setupChecks.every(Boolean) && <small className="academy-ready-note">Confirm each setup check so Miles can coach from a strong starting position.</small>}
           </div>
         )}
@@ -286,7 +315,7 @@ export default function Academy({ onBack }: { onBack: () => void }) {
         {phase === 'drill' && (
           <div className="academy-drill">
             <header>
-              <span><small>LESSON</small><b>{lesson.shortTitle}</b></span>
+              <span><small>{activeStage.label.toUpperCase()} · {stageIndex + 1}/{lesson.stages.length}</small><b>{lesson.shortTitle}</b></span>
               <span><small>ACCURACY</small><b>{attempts > 0 ? `${(correct / attempts * 100).toFixed(1)}%` : '100%'}</b></span>
               <span><small>STREAK</small><b>{streak}</b></span>
               <span><small>PROGRESS</small><b>{Math.min(index, queue.length)}/{queue.length}</b></span>
@@ -328,24 +357,24 @@ export default function Academy({ onBack }: { onBack: () => void }) {
 
         {phase === 'summary' && summary && (
           <div className="academy-summary">
-            <span className="academy-step">LESSON REVIEW · {lesson.shortTitle.toUpperCase()}</span>
-            <h2>{summary.passed ? 'Movement unlocked.' : 'One more clean pass.'}</h2>
-            <p>{summary.passed ? `You met both standards: ${lesson.passAccuracy}% accuracy and a ${lesson.passStreak}-key clean streak.` : `Reach ${lesson.passAccuracy}% accuracy with a ${lesson.passStreak}-key clean streak to master this lesson.`}</p>
+            <span className="academy-step">LESSON REVIEW · {lesson.shortTitle.toUpperCase()} · {activeStage.label.toUpperCase()}</span>
+            <h2>{summary.passed ? stageIndex === lesson.stages.length - 1 ? 'Lesson mastered.' : 'Stage cleared.' : 'One more clean pass.'}</h2>
+            <p>{summary.passed ? `You met both ${activeStage.label.toLowerCase()} standards: ${activeStage.passAccuracy}% accuracy and a ${activeStage.passStreak}-key clean streak.` : `Reach ${activeStage.passAccuracy}% accuracy with a ${activeStage.passStreak}-key clean streak to clear this stage.`}</p>
             <div className="academy-summary-grid">
-              <span className={summary.accuracy >= lesson.passAccuracy ? 'pass' : ''}><small>ACCURACY</small><b>{summary.accuracy.toFixed(1)}%</b></span>
-              <span className={summary.longestStreak >= lesson.passStreak ? 'pass' : ''}><small>BEST STREAK</small><b>{summary.longestStreak}</b></span>
+              <span className={summary.accuracy >= activeStage.passAccuracy ? 'pass' : ''}><small>ACCURACY</small><b>{summary.accuracy.toFixed(1)}%</b></span>
+              <span className={summary.longestStreak >= activeStage.passStreak ? 'pass' : ''}><small>BEST STREAK</small><b>{summary.longestStreak}</b></span>
               <span><small>RHYTHM</small><b>{Math.round(summary.rhythmScore)}</b></span>
               <span><small>KEYS/MIN</small><b>{Math.round(summary.keysPerMinute)}</b></span>
             </div>
             <section className="academy-weaknesses">
               <header><span>ADAPTIVE REVIEW</span><small>{summary.weakKeys.length ? 'MILES FOUND YOUR NEXT FOCUS' : 'NO REPEATED MISSES'}</small></header>
               {summary.weakKeys.length ? summary.weakKeys.map((weakKey) => (
-                <div key={weakKey.key}><kbd>{displayAcademyKey(weakKey.key)}</kbd><span><b>{FINGER_LABELS[weakKey.finger]}</b><small>{weakKey.misses} {weakKey.misses === 1 ? 'miss' : 'misses'} · repeated inside this drill</small></span></div>
+                <div key={weakKey.key}><kbd>{displayAcademyKey(weakKey.key)}</kbd><span><b>{FINGER_LABELS[weakKey.finger]}</b><small>{weakKey.misses} {weakKey.misses === 1 ? 'miss' : 'misses'} · held until corrected</small></span></div>
               )) : <p>Clean key selection. On the next pass, preserve that accuracy while making your cadence more even.</p>}
             </section>
             <div className="academy-summary-actions">
-              <button className="secondary-button" onClick={beginDrill}>REPEAT LESSON</button>
-              <button className="primary-button" onClick={summary.passed ? nextLesson : showCatalog}>{summary.passed ? 'NEXT LESSON' : 'CHOOSE A LESSON'}</button>
+              <button className="secondary-button" onClick={beginDrill}>REPEAT STAGE</button>
+              <button className="primary-button" onClick={summary.passed ? continueAfterStage : showCatalog}>{summary.passed ? stageIndex < lesson.stages.length - 1 ? 'NEXT STAGE' : 'NEXT LESSON' : 'CHOOSE A LESSON'}</button>
             </div>
           </div>
         )}
