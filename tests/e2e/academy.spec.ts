@@ -13,9 +13,15 @@ test('completes a lesson and saves local Academy progress', async ({ page }) => 
   await expect(page.getByRole('button', { name: /lesson$/ })).toHaveCount(6);
   await page.getByRole('button', { name: 'Start Find your home row lesson' }).click();
 
+  await expect(page.getByText('Check all three boxes to unlock the lesson.')).toBeVisible();
+  await expect(page.getByText('READY CHECK · 0/3 SELECTED')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'BEGIN LEARN DRILL' })).toBeDisabled();
   const setupChecks = page.getByRole('checkbox');
   await expect(setupChecks).toHaveCount(3);
   for (let index = 0; index < 3; index += 1) await setupChecks.nth(index).check();
+  await expect(page.getByText('READY CHECK · 3/3 SELECTED')).toBeVisible();
+  await expect(page.getByText('Ready—start the drill.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'BEGIN LEARN DRILL' })).toBeEnabled();
   await page.getByRole('button', { name: 'BEGIN LEARN DRILL' }).click();
 
   // Reproduce a real browser focus change. Hardware keys must still reach the
