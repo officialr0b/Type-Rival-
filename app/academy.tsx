@@ -90,6 +90,7 @@ export default function Academy({ onBack }: { onBack: () => void }) {
     () => ACADEMY_LESSONS.reduce((total, item) => total + item.stages.length, 0),
     [],
   );
+  const completedSetupCount = setupChecks.filter(Boolean).length;
 
   const chooseLesson = (nextLesson: AcademyLesson) => {
     setLesson(nextLesson);
@@ -294,8 +295,13 @@ export default function Academy({ onBack }: { onBack: () => void }) {
             <div className="academy-focus-keys" aria-label="Lesson focus keys">
               {lesson.focusKeys.map((key) => <kbd key={key}>{displayAcademyKey(key)}</kbd>)}
             </div>
+            <div className="academy-setup-instruction" role="note">
+              <span>STEP 1 OF 2</span>
+              <b>Check all three boxes to unlock the lesson.</b>
+              <p>Read each coaching cue, then select it when you’re ready to follow it during the drill.</p>
+            </div>
             <fieldset>
-              <legend>SET YOUR FORM</legend>
+              <legend>READY CHECK · {completedSetupCount}/{lesson.setupChecks.length} SELECTED</legend>
               {lesson.setupChecks.map((check, checkIndex) => (
                 <label key={check}>
                   <input
@@ -307,8 +313,11 @@ export default function Academy({ onBack }: { onBack: () => void }) {
                 </label>
               ))}
             </fieldset>
+            <div className={`academy-start-step ${setupChecks.every(Boolean) ? 'ready' : ''}`} aria-live="polite">
+              <span>STEP 2 OF 2</span>
+              <b>{setupChecks.every(Boolean) ? 'Ready—start the drill.' : `Select ${lesson.setupChecks.length - completedSetupCount} more ${lesson.setupChecks.length - completedSetupCount === 1 ? 'cue' : 'cues'}.`}</b>
+            </div>
             <button className="primary-button academy-begin" onClick={beginDrill} disabled={!setupChecks.every(Boolean)}>BEGIN {activeStage.label.toUpperCase()} DRILL</button>
-            {!setupChecks.every(Boolean) && <small className="academy-ready-note">Confirm each setup check so Miles can coach from a strong starting position.</small>}
           </div>
         )}
 
