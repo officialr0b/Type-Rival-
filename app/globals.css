@@ -220,6 +220,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .academy-stage-brief p { margin: 0; color: var(--muted); font-size: 0.68rem; line-height: 1.55; }
 .academy-focus-keys { display: flex; flex-wrap: wrap; gap: 0.45rem; margin: 1.3rem 0; }
 .academy-focus-keys kbd, .academy-weaknesses kbd { display: grid; min-width: 2.25rem; min-height: 2.25rem; place-items: center; border: 1px solid var(--border-bright); border-bottom-width: 3px; border-radius: 0.35rem; padding: 0.3rem; background: var(--ink-soft); color: var(--text); font-family: inherit; font-size: 0.68rem; font-weight: 950; }
+.academy-setup-instruction { display: grid; gap: 0.35rem; margin-top: 1.4rem; border: 1px solid rgba(39, 218, 203, 0.45); padding: 1rem; background: var(--cyan-soft); }
+.academy-setup-instruction span, .academy-start-step span { color: var(--cyan); font-size: 0.48rem; font-weight: 950; letter-spacing: 0.12em; }
+.academy-setup-instruction b, .academy-start-step b { color: var(--text); font-size: 0.72rem; line-height: 1.4; }
+.academy-setup-instruction p { margin: 0; color: var(--muted); font-size: 0.64rem; line-height: 1.55; }
 .academy-briefing fieldset { display: grid; gap: 0.65rem; margin: 1.4rem 0; border: 1px solid var(--border); padding: 1rem; }
 .academy-briefing legend { padding: 0 0.5rem; color: var(--cyan); font-size: 0.5rem; font-weight: 950; letter-spacing: 0.11em; }
 .academy-briefing label { cursor: pointer; }
@@ -229,8 +233,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .academy-briefing label input:checked + span { color: var(--text); }
 .academy-briefing label input:checked + span b { border-color: var(--cyan); background: var(--cyan); color: var(--ink); }
 .academy-briefing label input:focus-visible + span { outline: 2px solid var(--cyan); outline-offset: 0.35rem; }
+.academy-start-step { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 0.75rem; border-left: 3px solid var(--border-bright); padding: 0.65rem 0.8rem; background: var(--ink-soft); }
+.academy-start-step.ready { border-left-color: var(--cyan); }
+.academy-start-step b { color: var(--muted); text-align: right; }
+.academy-start-step.ready b { color: var(--cyan); }
 .academy-begin { width: 100%; }
-.academy-ready-note { display: block; margin-top: 0.65rem; color: var(--muted); font-size: 0.55rem; line-height: 1.45; text-align: center; }
 .academy-drill > header { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--border); }
 .academy-drill > header span { display: grid; min-width: 0; gap: 0.2rem; padding: 0.75rem; border-right: 1px solid var(--border); }
 .academy-drill > header span:last-child { border-right: 0; }
