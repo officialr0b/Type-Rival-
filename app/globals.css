@@ -693,9 +693,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .top-nav { min-height: 4rem; padding-inline: 0.75rem; }
   .wordmark { font-size: 0.92rem; }
   .wordmark-mark { width: 2.1rem; }
-  .top-nav nav button:not(.nav-cta) { display: none; }
+  .nav-wordmark > span:last-child { display: none; }
+  .top-nav nav { gap: 0; }
+  .top-nav nav button { padding: 0.55rem 0.45rem; font-size: 0.6rem; }
+  .top-nav nav button:not(.nav-cta):not(.nav-home):not(.nav-install) { display: none; }
+  .top-nav nav button.nav-home, .top-nav nav button.nav-install { display: inline-flex; }
   .top-nav nav button.nav-signout { display: inline-flex; }
   .top-nav nav .nav-cta { padding: 0.6rem 0.7rem; font-size: 0.63rem; }
+  .nav-private { display: none; }
   .home-page { padding-top: 3.2rem; }
   .home-hero h1 { font-size: clamp(3.25rem, 17vw, 5rem); }
   .hero-scorecard { box-shadow: 0.55rem 0.55rem 0 #07111d; }

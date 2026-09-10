@@ -790,6 +790,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
         progression={bootstrap.progression}
         juniorCareer={juniorCareer}
         privateJunior={privateJunior}
+        mobileViewer={deviceClass === 'mobile'}
         loading={loadingProfile}
         onHome={goHome}
         onLeaderboard={() => setScreen('leaderboard')}
@@ -925,11 +926,12 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
   );
 }
 
-function Header({ player, progression, juniorCareer, privateJunior, loading, onHome, onLeaderboard, onInstall, onAccount, onSignIn, onSignOut }: {
+function Header({ player, progression, juniorCareer, privateJunior, mobileViewer, loading, onHome, onLeaderboard, onInstall, onAccount, onSignIn, onSignOut }: {
   player: Player;
   progression: Progression | null;
   juniorCareer: Progression | null;
   privateJunior: boolean;
+  mobileViewer: boolean;
   loading: boolean;
   onHome: () => void;
   onLeaderboard: () => void;
@@ -944,8 +946,9 @@ function Header({ player, progression, juniorCareer, privateJunior, loading, onH
         <span className="wordmark-mark">TR</span><span>TYPE<b>RIVAL</b></span>
       </button>
       <nav aria-label="Primary navigation">
+        <button className="nav-home" onClick={onHome}>Home</button>
         {!privateJunior && <button onClick={onLeaderboard}>Leaderboard</button>}
-        <button onClick={onInstall}>Install</button>
+        {mobileViewer && <button className="nav-install" onClick={onInstall}>Install</button>}
         {privateJunior ? (
           <span className="nav-private">PRIVATE · THIS DEVICE</span>
         ) : player.signedIn ? (
