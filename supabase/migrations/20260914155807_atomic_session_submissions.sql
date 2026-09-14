@@ -64,7 +64,10 @@ begin
   end if;
 
   if ticket.started_at is null
-    or ticket.consumed_at is not null
+    -- The currently deployed function consumes just before calling this RPC.
+    -- Accept that short-lived handoff so the database migration can land before
+    -- the new Edge Function without interrupting active players.
+    or (ticket.consumed_at is not null and ticket.consumed_at < now() - interval '2 minutes')
     or ticket.expires_at <= now()
     or ticket.mode is distinct from p_mode
     or ticket.passage_id is distinct from p_passage_id
