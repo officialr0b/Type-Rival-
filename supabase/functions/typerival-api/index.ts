@@ -38,12 +38,14 @@ const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
 });
 const DOUBLE_XP_MS = 30 * 60 * 1_000;
 const RANKED_DURATION_SEC = 45;
-const RUN_EXPIRY_GRACE_MS = 30_000;
+const RUN_CLOCK_SKEW_MS = 1_500;
+const RUN_SUBMISSION_GRACE_MS = 15 * 60 * 1_000;
 const ALLOWED_ORIGIN = 'https://type-rival-five.vercel.app';
 const CORS = {
   'access-control-allow-origin': ALLOWED_ORIGIN,
   'access-control-allow-headers': 'authorization, apikey, content-type, x-typerival-client-ip',
   'access-control-allow-methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+  'access-control-expose-headers': 'x-request-id, x-typerival-error-stage, x-typerival-error-code',
   vary: 'origin',
 };
 
@@ -135,16 +137,19 @@ Deno.serve(async (request) => {
       return finish(json({ error: error.message }, error.status), requestId, routeName, startedAt, user);
     }
     const stage = error instanceof ServiceError ? error.stage : `route:${routeName}`;
+    const errorCode = serviceErrorCode(error);
     console.error(JSON.stringify({
       event: 'typerival_api_failed',
       requestId,
       route: routeName,
       stage,
+      errorCode,
       durationMs: Date.now() - startedAt,
       error: error instanceof Error ? error.message : String(error),
     }));
     const response = json({ error: 'TypeRival could not complete that request.' }, 500);
     response.headers.set('x-typerival-error-stage', stage);
+    response.headers.set('x-typerival-error-code', errorCode);
     return finish(response, requestId, routeName, startedAt, user);
   }
 });
@@ -540,7 +545,7 @@ async function startRun(runTicketId: string, user: User | null) {
     return json({ startedAt: ticket.started_at, expiresAt: ticket.expires_at });
   }
   const startedAt = new Date().toISOString();
-  const expiresAt = new Date(Date.now() + ticket.duration_sec * 1_000 + RUN_EXPIRY_GRACE_MS).toISOString();
+  const expiresAt = new Date(Date.now() + ticket.duration_sec * 1_000 + RUN_SUBMISSION_GRACE_MS).toISOString();
   const updated = await admin.from('run_tickets').update({ started_at: startedAt, expires_at: expiresAt })
     .eq('id', ticket.id).is('started_at', null).is('consumed_at', null)
     .select('started_at, expires_at').maybeSingle();
@@ -569,7 +574,7 @@ async function consumeRunTicket(
     throw new RequestError('This result does not match its authorized run.', 409);
   }
   const serverElapsed = Date.now() - Date.parse(ticket.started_at);
-  if (elapsedMs > durationSec * 1_000 + 1_500 || elapsedMs > serverElapsed + 1_500 || serverElapsed > durationSec * 1_000 + RUN_EXPIRY_GRACE_MS) {
+  if (elapsedMs > durationSec * 1_000 + RUN_CLOCK_SKEW_MS || elapsedMs > serverElapsed + RUN_CLOCK_SKEW_MS || serverElapsed > durationSec * 1_000 + RUN_SUBMISSION_GRACE_MS) {
     throw new RequestError('This run did not pass the server timing check.', 422);
   }
 
@@ -580,6 +585,46 @@ async function consumeRunTicket(
   if (consumed.error) throw consumed.error;
   if (!consumed.data) throw new RequestError('This run authorization was already used.', 409);
   return ticket;
+}
+
+async function validateSessionRunTicket(
+  user: User,
+  runTicketId: string,
+  mode: GameMode,
+  passageId: string,
+  language: TypingLanguage,
+  durationSec: number,
+  elapsedMs: number,
+) {
+  const selected = await admin.from('run_tickets').select('*')
+    .eq('id', runTicketId).eq('user_id', user.id).maybeSingle();
+  if (selected.error) throw new ServiceError('session_ticket:load', selected.error);
+  const ticket = selected.data as RunTicketRow | null;
+  if (!ticket || !ticket.started_at) {
+    throw new RequestError('This run authorization is missing or was not started.', 409);
+  }
+  if (ticket.mode !== mode || ticket.passage_id !== passageId || ticket.language !== language || ticket.duration_sec !== durationSec) {
+    throw new RequestError('This result does not match its authorized run.', 409);
+  }
+
+  const existing = await admin.from('sessions').select('*')
+    .eq('run_ticket_id', ticket.id).eq('user_id', user.id).maybeSingle();
+  if (existing.error) throw new ServiceError('session_ticket:existing', existing.error);
+  if (existing.data) return { ticket, existingSession: existing.data };
+
+  const serverElapsed = Date.now() - Date.parse(ticket.started_at);
+  if (ticket.consumed_at || Date.parse(ticket.expires_at) <= Date.now()) {
+    throw new RequestError('This run authorization is expired or already used.', 409);
+  }
+  if (
+    elapsedMs > durationSec * 1_000 + RUN_CLOCK_SKEW_MS
+    || elapsedMs > serverElapsed + RUN_CLOCK_SKEW_MS
+    || serverElapsed > durationSec * 1_000 + RUN_SUBMISSION_GRACE_MS
+  ) {
+    throw new RequestError('This run did not pass the server timing check.', 422);
+  }
+
+  return { ticket, existingSession: null };
 }
 
 async function submitSession(request: Request, user: User | null) {
@@ -630,13 +675,14 @@ async function submitSession(request: Request, user: User | null) {
     return json({ metrics, xpEarned: baseXp, xpMultiplier: 1, saved: false, riskStatus, match: null });
   }
   if (typeof body.runTicketId !== 'string') return json({ error: 'Start a new authorized run before submitting.' }, 409);
-  const ticket = await consumeRunTicket(user, body.runTicketId, mode, passage.id, passage.language, durationSec, elapsedMs);
+  const validated = await validateSessionRunTicket(user, body.runTicketId, mode, passage.id, passage.language, durationSec, elapsedMs);
+  const ticket = validated.ticket;
   const inputMethod = inputMethodFromTelemetry(ticket.device_class === 'desktop' ? 'desktop' : 'mobile', inputTelemetry);
 
   const player = await ensurePlayer(user);
   const doubleXpActive = Boolean(player.double_xp_until && Date.parse(player.double_xp_until) > Date.now());
   const xpMultiplier = doubleXpActive ? 2 : 1;
-  const xpEarned = baseXp * xpMultiplier;
+  let xpEarned = baseXp * xpMultiplier;
   const matchStatus = mode === 'ranked' && riskStatus === 'clear' ? 'pending' : 'none';
   const inserted = await admin.rpc('tr_insert_session', {
     p_user_id: player.id,
@@ -666,25 +712,32 @@ async function submitSession(request: Request, user: User | null) {
     p_coaching_mistakes: coachingProfile.mistakes,
     p_coaching_insight_keys: coachingInsightKeys,
   });
-  if (inserted.error) throw inserted.error;
+  if (inserted.error) throw new ServiceError('session:insert', inserted.error);
   const session = Array.isArray(inserted.data) ? inserted.data[0] : inserted.data;
-  const match = mode === 'ranked' && riskStatus === 'clear'
-    ? await tryRankedMatch(session.id, player, passage.id, ticket.device_class, inputMethod)
+  if (!session?.id) throw new ServiceError('session:insert', new Error('Session insert returned no row.'));
+  xpEarned = Number(session.xp_earned ?? xpEarned);
+  const storedRiskStatus = String(session.risk_status ?? riskStatus);
+  const storedInputMethod = (session.input_method ?? inputMethod) as InputMethod;
+  const responseMetrics = storedSessionMetrics(session as Record<string, unknown>);
+  const match = mode === 'ranked' && storedRiskStatus === 'clear'
+    ? validated.existingSession?.match_status === 'matched'
+      ? { status: 'pending' }
+      : await tryRankedMatch(session.id, player, passage.id, ticket.device_class, storedInputMethod)
     : null;
-  const progression = riskStatus === 'clear' ? await loadProgressionAfterRun(player) : null;
+  const progression = storedRiskStatus === 'clear' ? await loadProgressionAfterRun(player) : null;
 
   return json({
-    metrics,
+    metrics: responseMetrics,
     xpEarned,
-    xpMultiplier,
+    xpMultiplier: Math.max(1, Math.round(xpEarned / Math.max(1, baseXp))),
     doubleXpUntil: match?.doubleXpUntil ?? player.double_xp_until,
     saved: true,
-    riskStatus,
+    riskStatus: storedRiskStatus,
     sessionId: session.id,
     match,
     progression,
     missionBonusXp: progression?.missionBonusXp ?? 0,
-    inputMethod,
+    inputMethod: storedInputMethod,
   });
 }
 
@@ -891,6 +944,22 @@ async function createChallenge(request: Request, user: User | null) {
     return json({ error: 'The challenge payload does not match its verified run.' }, 409);
   }
 
+  const existing = await admin.from('challenges')
+    .select('code, expires_at')
+    .eq('source_session_id', source.data.id)
+    .gt('expires_at', new Date().toISOString())
+    .maybeSingle();
+  if (existing.error) throw new ServiceError('challenge:existing', existing.error);
+  if (existing.data) {
+    return json({
+      code: existing.data.code,
+      creatorHandle: player.handle,
+      metrics,
+      path: `/?challenge=${existing.data.code}`,
+      expiresAt: existing.data.expires_at,
+    });
+  }
+
   const code = crypto.randomUUID().replaceAll('-', '').slice(0, 8).toUpperCase();
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000).toISOString();
   const created = await admin.from('challenges').insert({
@@ -906,7 +975,24 @@ async function createChallenge(request: Request, user: User | null) {
     creator_total_typed_chars: Math.round(totalTypedChars),
     expires_at: expiresAt,
   });
-  if (created.error) throw created.error;
+  if (created.error?.code === '23505') {
+    const raced = await admin.from('challenges')
+      .select('code, expires_at')
+      .eq('source_session_id', source.data.id)
+      .gt('expires_at', new Date().toISOString())
+      .maybeSingle();
+    if (raced.error) throw new ServiceError('challenge:existing_after_conflict', raced.error);
+    if (raced.data) {
+      return json({
+        code: raced.data.code,
+        creatorHandle: player.handle,
+        metrics,
+        path: `/?challenge=${raced.data.code}`,
+        expiresAt: raced.data.expires_at,
+      });
+    }
+  }
+  if (created.error) throw new ServiceError('challenge:insert', created.error);
   return json({ code, creatorHandle: player.handle, metrics, path: `/?challenge=${code}`, expiresAt });
 }
 
@@ -1311,7 +1397,18 @@ async function withinRateLimit(request: Request, user: User | null, action: stri
     p_limit: rule.limit,
     p_window_seconds: rule.seconds,
   });
-  if (result.error) throw new ServiceError('rate_limit', result.error);
+  if (result.error) {
+    const errorCode = serviceErrorCode(result.error);
+    if (request.method === 'GET' && action === 'bootstrap') {
+      console.warn(JSON.stringify({
+        event: 'typerival_rate_limit_degraded',
+        action,
+        errorCode,
+      }));
+      return true;
+    }
+    throw new ServiceError('rate_limit', result.error);
+  }
   return result.data === true;
 }
 
@@ -1456,9 +1553,24 @@ class RequestError extends Error {
   }
 }
 
+function safeErrorCode(error: unknown) {
+  if (!error || typeof error !== 'object') return 'UNKNOWN';
+  const candidate = (error as { code?: unknown; name?: unknown }).code
+    ?? (error as { name?: unknown }).name;
+  if (typeof candidate !== 'string' || !candidate.trim()) return 'UNKNOWN';
+  return candidate.trim().slice(0, 80).replace(/[^A-Za-z0-9_.:-]/g, '_');
+}
+
+function serviceErrorCode(error: unknown) {
+  return error instanceof ServiceError ? error.code : safeErrorCode(error);
+}
+
 class ServiceError extends Error {
+  readonly code: string;
+
   constructor(readonly stage: string, cause: unknown) {
     super(cause instanceof Error ? cause.message : String(cause));
     this.name = 'ServiceError';
+    this.code = safeErrorCode(cause);
   }
 }
