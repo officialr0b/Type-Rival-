@@ -66,10 +66,10 @@ begin
   if ticket.started_at is null
     or ticket.consumed_at is not null
     or ticket.expires_at <= now()
-    or ticket.mode <> p_mode
-    or ticket.passage_id <> p_passage_id
-    or ticket.language <> p_language
-    or ticket.device_class <> p_device_class
+    or ticket.mode is distinct from p_mode
+    or ticket.passage_id is distinct from p_passage_id
+    or ticket.language is distinct from p_language
+    or ticket.device_class is distinct from p_device_class
     or p_duration_ms > ticket.duration_sec * 1000 + 1500 then
     raise exception using errcode = '22023', message = 'invalid_or_expired_run_ticket';
   end if;
