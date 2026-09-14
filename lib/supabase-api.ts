@@ -1,6 +1,22 @@
 import type { NextRequest } from 'next/server';
 
+const RETRYABLE_STATUS = new Set([500, 502, 503, 504]);
+
+export function canRetryTypeRivalRequest(method: string, path: string) {
+  return method === 'GET' || (method === 'POST' && path.replace(/^\/+/, '') === 'sessions');
+}
+
+function safeErrorCode(error: unknown) {
+  if (!error || typeof error !== 'object') return 'UNKNOWN';
+  const candidate = (error as { code?: unknown; name?: unknown }).code
+    ?? (error as { name?: unknown }).name;
+  if (typeof candidate !== 'string' || !candidate.trim()) return 'UNKNOWN';
+  return candidate.trim().slice(0, 80).replace(/[^A-Za-z0-9_.:-]/g, '_');
+}
+
 export async function proxyTypeRivalApi(request: NextRequest, path: string) {
+  const startedAt = Date.now();
+  let attemptCount = 0;
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
   if (!url || !key) {
@@ -22,12 +38,13 @@ export async function proxyTypeRivalApi(request: NextRequest, path: string) {
   const body = request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.text();
 
   try {
-    const maxAttempts = request.method === 'GET' ? 2 : 1;
+    const maxAttempts = canRetryTypeRivalRequest(request.method, path) ? 2 : 1;
     let response: Response | null = null;
-    let firstFailureStatus: number | null = null;
+    let firstFailure: number | string | null = null;
     let lastError: unknown;
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      attemptCount = attempt + 1;
       try {
         const candidate = await fetch(upstream, {
           method: request.method,
@@ -36,8 +53,8 @@ export async function proxyTypeRivalApi(request: NextRequest, path: string) {
           cache: 'no-store',
           signal: AbortSignal.timeout(12_000),
         });
-        if (candidate.status >= 500 && attempt + 1 < maxAttempts) {
-          firstFailureStatus = candidate.status;
+        if (RETRYABLE_STATUS.has(candidate.status) && attempt + 1 < maxAttempts) {
+          firstFailure = candidate.status;
           await candidate.body?.cancel();
           await new Promise((resolve) => setTimeout(resolve, 150));
           continue;
@@ -46,6 +63,7 @@ export async function proxyTypeRivalApi(request: NextRequest, path: string) {
         break;
       } catch (error) {
         lastError = error;
+        firstFailure ??= safeErrorCode(error);
         if (attempt + 1 >= maxAttempts) throw error;
         await new Promise((resolve) => setTimeout(resolve, 150));
       }
@@ -53,24 +71,31 @@ export async function proxyTypeRivalApi(request: NextRequest, path: string) {
 
     if (!response) throw lastError ?? new Error('Supabase returned no response.');
     const requestId = response.headers.get('x-request-id') ?? crypto.randomUUID();
-    if (firstFailureStatus && response.ok) {
-      console.warn('supabase_api_transient_recovered', {
+    if (firstFailure && response.ok) {
+      console.warn(JSON.stringify({
+        event: 'supabase_api_transient_recovered',
         path,
         method: request.method,
-        firstStatus: firstFailureStatus,
+        firstFailure,
+        attemptCount,
+        durationMs: Date.now() - startedAt,
         requestId,
-      });
+      }));
     }
     if (!response.ok) {
       const details = {
+        event: response.status >= 500 ? 'supabase_api_upstream_error' : 'supabase_api_client_rejected',
         path,
         method: request.method,
         status: response.status,
+        attemptCount,
+        durationMs: Date.now() - startedAt,
         requestId,
         upstreamStage: response.headers.get('x-typerival-error-stage') ?? 'unknown',
+        upstreamCode: response.headers.get('x-typerival-error-code') ?? 'unknown',
       };
-      if (response.status >= 500) console.error('supabase_api_upstream_error', details);
-      else console.warn('supabase_api_client_rejected', details);
+      if (response.status >= 500) console.error(JSON.stringify(details));
+      else console.warn(JSON.stringify(details));
     }
     const responseHeaders = new Headers({
       'content-type': response.headers.get('content-type') ?? 'application/json',
@@ -84,7 +109,15 @@ export async function proxyTypeRivalApi(request: NextRequest, path: string) {
       headers: responseHeaders,
     });
   } catch (error) {
-    console.error('supabase_api_unavailable', error);
+    console.error(JSON.stringify({
+      event: 'supabase_api_unavailable',
+      path,
+      method: request.method,
+      attemptCount,
+      durationMs: Date.now() - startedAt,
+      errorCode: safeErrorCode(error),
+      error: error instanceof Error ? error.message : String(error),
+    }));
     return Response.json({ error: 'TypeRival services are temporarily unavailable.' }, { status: 503 });
   }
 }

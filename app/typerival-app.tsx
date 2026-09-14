@@ -203,6 +203,25 @@ type SessionApiResult = {
   inputMethod?: InputMethod;
 };
 
+type SessionSubmissionPayload = {
+  mode: GameMode;
+  passageId: string;
+  input: string;
+  elapsedMs: number;
+  totalTypedChars: number;
+  durationSec: number;
+  runTicketId?: string;
+  ageBand: AgeBand | null;
+  typingProfile: TypingProfile;
+  inputTelemetry: InputTelemetry;
+  coachingInsightKeys?: string[];
+};
+
+type PendingSessionSave = {
+  result: SavedResult;
+  payload: SessionSubmissionPayload;
+};
+
 type DeferredInstallPrompt = Event & {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
@@ -238,6 +257,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
   const [liveRoomId, setLiveRoomId] = useState('');
   const [passage, setPassage] = useState<Passage>(() => choosePassage([], DEFAULT_LANGUAGE));
   const [result, setResult] = useState<SavedResult | null>(null);
+  const [pendingSessionSave, setPendingSessionSave] = useState<PendingSessionSave | null>(null);
   const [bootstrap, setBootstrap] = useState<Bootstrap>(defaultBootstrap);
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -530,6 +550,65 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     } : current);
   };
 
+  const saveSessionSubmission = async (pending: PendingSessionSave) => {
+    const response = await authFetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(pending.payload),
+    });
+    const data = await response.json() as SessionApiResult;
+    if (!response.ok) throw new Error(data.error ?? 'Run failed');
+
+    // The session is now durable. A Challenge Link is separate enrichment, so
+    // its failure must never make a successfully saved score look lost.
+    setPendingSessionSave(null);
+    let challengeUrl: string | undefined;
+    let challengeLinkFailed = false;
+    if (pending.result.mode === 'friendly') {
+      try {
+        const challengeResponse = await authFetch('/api/challenges', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            passageId: pending.result.passage.id,
+            sessionId: data.sessionId,
+            durationSec: pending.payload.durationSec,
+            input: pending.result.input,
+            elapsedMs: pending.result.elapsedMs,
+            totalTypedChars: pending.result.totalTypedChars,
+            ageBand: pending.payload.ageBand,
+          }),
+        });
+        const challengeData = await challengeResponse.json() as { path?: string; error?: string };
+        if (!challengeResponse.ok || !challengeData.path) {
+          throw new Error(challengeData.error ?? 'The challenge link could not be created.');
+        }
+        challengeUrl = `${window.location.origin}${challengeData.path}`;
+      } catch {
+        challengeLinkFailed = true;
+      }
+    }
+
+    setResult({ ...pending.result, ...data, challengeUrl });
+    setMessage(challengeLinkFailed
+      ? 'Your run is saved, but the challenge link could not be created. Run it back to make a new link.'
+      : '');
+    if (data.saved) void refreshBootstrap(pending.payload.ageBand, pending.result.passage.language);
+  };
+
+  const retrySessionSave = async () => {
+    if (!pendingSessionSave || saving) return;
+    setSaving(true);
+    setMessage('Retrying your saved result…');
+    try {
+      await saveSessionSubmission(pendingSessionSave);
+    } catch {
+      setMessage('Your result is still safe on this screen. Check your connection, then tap Retry save again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const completeRace = async (localResult: LocalRaceResult) => {
     const customPassage = isCustomPassage(localResult.passage);
     if (!customPassage) rememberPassage(localResult.passage.id);
@@ -549,6 +628,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
         })
       : undefined;
     const enrichedResult = { ...localResult, coachingReport };
+    setPendingSessionSave(null);
     if (coachingReport && !customPassage) {
       recordLocalCoachingRun(createCoachingRun({
         passageId: localResult.passage.id,
@@ -641,10 +721,9 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           progression: data.progression,
         });
       } else {
-        const response = await authFetch('/api/sessions', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
+        const pending: PendingSessionSave = {
+          result: { ...enrichedResult, xpEarned: 0, saved: false },
+          payload: {
             mode: localResult.mode,
             passageId: localResult.passage.id,
             input: localResult.input,
@@ -656,33 +735,15 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
             typingProfile: localResult.typingProfile,
             inputTelemetry: localResult.inputTelemetry,
             coachingInsightKeys: coachingReport?.insightKeys,
-          }),
-        });
-        const data = await response.json() as SessionApiResult;
-        if (!response.ok) throw new Error(data.error ?? 'Run failed');
-        let challengeUrl: string | undefined;
-        if (localResult.mode === 'friendly') {
-          const challengeResponse = await authFetch('/api/challenges', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              passageId: localResult.passage.id,
-              sessionId: data.sessionId,
-              durationSec,
-              input: localResult.input,
-              elapsedMs: localResult.elapsedMs,
-              totalTypedChars: localResult.totalTypedChars,
-              ageBand,
-            }),
-          });
-          const challengeData = await challengeResponse.json() as { path?: string; error?: string };
-          if (challengeResponse.ok && challengeData.path) challengeUrl = `${window.location.origin}${challengeData.path}`;
-        }
-        setResult({ ...enrichedResult, ...data, challengeUrl });
-        if (data.saved) void refreshBootstrap(ageBand, language);
+          },
+        };
+        if (bootstrap.user.signedIn && pending.payload.runTicketId) setPendingSessionSave(pending);
+        await saveSessionSubmission(pending);
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'The result could not be saved.');
+      setMessage(pendingSessionSave || (bootstrap.user.signedIn && runTicket?.runTicketId)
+        ? 'Your result is safe on this screen. Check your connection, then tap Retry save.'
+        : error instanceof Error ? error.message : 'The result could not be saved.');
     } finally {
       setSaving(false);
     }
@@ -693,6 +754,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
       setPassage((current) => chooseFreshPassage(current.id, current.language, category));
     }
     setResult(null);
+    setPendingSessionSave(null);
     setRunTicket(null);
     setScreen('setup');
   };
@@ -775,6 +837,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     setCategory('all');
     setChallenge(null);
     setResult(null);
+    setPendingSessionSave(null);
     setRunTicket(null);
     window.history.replaceState({}, '', '/');
     window.requestAnimationFrame(() => window.scrollTo({ top: 0 }));
@@ -860,6 +923,8 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           privateJunior={privateJunior}
           playerHandle={bootstrap.user.handle}
           message={message}
+          canRetrySave={Boolean(pendingSessionSave)}
+          onRetrySave={() => void retrySessionSave()}
           onRankedMatch={applyRankedMatch}
           onFriendlyMatch={applyFriendlyMatch}
           onAgain={runAgain}
@@ -1681,13 +1746,15 @@ function RaceMetric({ value, label, accent, warning }: { value: string | number;
   return <span className={`race-metric ${accent ? 'accent' : ''} ${warning ? 'warning' : ''}`}><b>{value}</b><small>{label}</small></span>;
 }
 
-function Results({ result, saving, signedIn, privateJunior, playerHandle, message, onRankedMatch, onFriendlyMatch, onAgain, onHome, onSignIn }: {
+function Results({ result, saving, signedIn, privateJunior, playerHandle, message, canRetrySave, onRetrySave, onRankedMatch, onFriendlyMatch, onAgain, onHome, onSignIn }: {
   result: SavedResult;
   saving: boolean;
   signedIn: boolean;
   privateJunior: boolean;
   playerHandle?: string;
   message: string;
+  canRetrySave: boolean;
+  onRetrySave: () => void;
   onRankedMatch: (match: NonNullable<SavedResult['match']>) => void;
   onFriendlyMatch: (match: NonNullable<SavedResult['friendlyMatch']>) => void;
   onAgain: () => void;
@@ -1780,6 +1847,7 @@ function Results({ result, saving, signedIn, privateJunior, playerHandle, messag
         {result.mode === 'friendly' && !result.friendlyMatch && <div className="pending-match"><i />Challenge ready. This screen updates when your rival finishes.</div>}
         {result.match?.status === 'matched' && <div className="pending-match"><i />vs. {result.match.opponentHandle} · {formatDelta(result.match.ratingDelta)} rating</div>}
         {result.friendlyMatch && <div className="pending-match"><i />vs. {result.friendlyMatch.opponentHandle} · Challenge Link complete</div>}
+        {canRetrySave && <button className="secondary-button result-retry-save" onClick={onRetrySave} disabled={saving}>{saving ? 'RETRYING…' : 'RETRY SAVE'}</button>}
         {!signedIn && !privateJunior && <button className="text-button result-signin" onClick={onSignIn}>SIGN IN TO START YOUR VERIFIED HISTORY →</button>}
       </section>
       <section className="result-performance">
