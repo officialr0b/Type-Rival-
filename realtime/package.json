@@ -14,8 +14,8 @@
     "test": "node --import tsx --test src/*.test.ts src/**/*.test.ts"
   },
   "dependencies": {
-    "@colyseus/schema": "5.0.27",
-    "@colyseus/core": "0.18.10",
+    "@colyseus/schema": "5.0.32",
+    "@colyseus/core": "0.18.14",
     "@colyseus/ws-transport": "0.18.2",
     "express": "5.2.1"
   },
