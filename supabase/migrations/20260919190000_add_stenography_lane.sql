@@ -1,4 +1,4 @@
-+-- Add a user-selected stenography lane. Browsers see translated text from
+-- Add a user-selected stenography lane. Browsers see translated text from
 -- Plover/CAT software rather than raw strokes, so this preference is bound to
 -- the one-use run ticket before the race starts.
 
