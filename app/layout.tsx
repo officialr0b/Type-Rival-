@@ -2,6 +2,8 @@ import type { Metadata, Viewport } from 'next';
 import PrivacyAnalytics from './privacy-analytics';
 import './globals.css';
 
+const themeBootScript = `try{var t=localStorage.getItem('typerival:theme:v1')==='light'?'light':'dark';document.documentElement.dataset.theme=t;document.documentElement.style.colorScheme=t}catch(e){document.documentElement.dataset.theme='dark'}`;
+
 const deploymentHost = process.env.NEXT_PUBLIC_SITE_URL
   ?? (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : null)
   ?? 'https://www.typerival.com';
@@ -46,12 +48,13 @@ export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   themeColor: '#07111f',
-  colorScheme: 'dark',
+  colorScheme: 'dark light',
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
+      <head><script dangerouslySetInnerHTML={{ __html: themeBootScript }} /></head>
       <body>
         {children}
         <PrivacyAnalytics />

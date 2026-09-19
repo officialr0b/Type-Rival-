@@ -15,6 +15,7 @@ import {
   type DeviceClass,
   type GameMode,
   type InputMethod,
+  type MobileInputPreference,
   type InputTelemetry,
   type Passage,
   type PassageCategorySelection,
@@ -71,6 +72,7 @@ type RunTicketRow = {
   language: TypingLanguage;
   duration_sec: number;
   device_class: DeviceClass | 'unknown';
+  input_preference: MobileInputPreference;
   issued_at: string;
   started_at: string | null;
   expires_at: string;
@@ -199,22 +201,26 @@ async function bootstrap(url: URL, user: User | null) {
     }
   }
   const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000).toISOString();
-  const [boardQuery, touchOpenQuery, swipeOpenQuery, hardwareOpenQuery, touchRankedQuery, swipeRankedQuery, hardwareRankedQuery] = await Promise.all([
+  const [boardQuery, touchOpenQuery, swipeOpenQuery, hardwareOpenQuery, stenoOpenQuery, touchRankedQuery, swipeRankedQuery, hardwareRankedQuery, stenoRankedQuery] = await Promise.all([
     admin.rpc('tr_get_leaderboard', { p_cutoff: cutoff, p_language: language, p_limit: 10 }),
     admin.rpc('tr_get_leaderboard', { p_cutoff: cutoff, p_input_method: 'mobile_touch', p_language: language, p_limit: 10 }),
     admin.rpc('tr_get_leaderboard', { p_cutoff: cutoff, p_input_method: 'mobile_swipe', p_language: language, p_limit: 10 }),
     admin.rpc('tr_get_leaderboard', { p_cutoff: cutoff, p_input_method: 'hardware', p_language: language, p_limit: 10 }),
+    admin.rpc('tr_get_leaderboard', { p_cutoff: cutoff, p_input_method: 'stenography', p_language: language, p_limit: 10 }),
     admin.rpc('tr_get_ranked_leaderboard', { p_cutoff: cutoff, p_device_class: 'mobile', p_input_method: 'mobile_touch', p_language: language, p_limit: 10 }),
     admin.rpc('tr_get_ranked_leaderboard', { p_cutoff: cutoff, p_device_class: 'mobile', p_input_method: 'mobile_swipe', p_language: language, p_limit: 10 }),
     admin.rpc('tr_get_ranked_leaderboard', { p_cutoff: cutoff, p_device_class: 'desktop', p_input_method: 'hardware', p_language: language, p_limit: 10 }),
+    admin.rpc('tr_get_ranked_leaderboard', { p_cutoff: cutoff, p_device_class: 'desktop', p_input_method: 'stenography', p_language: language, p_limit: 10 }),
   ]);
   if (boardQuery.error) throw new ServiceError('bootstrap:leaderboard', boardQuery.error);
   if (touchOpenQuery.error) throw new ServiceError('bootstrap:open_touch', touchOpenQuery.error);
   if (swipeOpenQuery.error) throw new ServiceError('bootstrap:open_swipe', swipeOpenQuery.error);
   if (hardwareOpenQuery.error) throw new ServiceError('bootstrap:open_hardware', hardwareOpenQuery.error);
+  if (stenoOpenQuery.error) throw new ServiceError('bootstrap:open_stenography', stenoOpenQuery.error);
   if (touchRankedQuery.error) throw new ServiceError('bootstrap:ranked_touch', touchRankedQuery.error);
   if (swipeRankedQuery.error) throw new ServiceError('bootstrap:ranked_swipe', swipeRankedQuery.error);
   if (hardwareRankedQuery.error) throw new ServiceError('bootstrap:ranked_hardware', hardwareRankedQuery.error);
+  if (stenoRankedQuery.error) throw new ServiceError('bootstrap:ranked_stenography', stenoRankedQuery.error);
   const mapLeaderboard = (rows: Record<string, unknown>[]) => rows.map((entry) => ({
     handle: String(entry.handle),
     averageWpm: Number(entry.average_wpm),
@@ -227,14 +233,17 @@ async function bootstrap(url: URL, user: User | null) {
     mobile_touch: mapLeaderboard((touchOpenQuery.data ?? []) as Record<string, unknown>[]),
     mobile_swipe: mapLeaderboard((swipeOpenQuery.data ?? []) as Record<string, unknown>[]),
     hardware: mapLeaderboard((hardwareOpenQuery.data ?? []) as Record<string, unknown>[]),
+    stenography: mapLeaderboard((stenoOpenQuery.data ?? []) as Record<string, unknown>[]),
   };
   const mobileTouch = mapLeaderboard((touchRankedQuery.data ?? []) as Record<string, unknown>[]);
   const mobileSwipe = mapLeaderboard((swipeRankedQuery.data ?? []) as Record<string, unknown>[]);
   const hardware = mapLeaderboard((hardwareRankedQuery.data ?? []) as Record<string, unknown>[]);
+  const stenography = mapLeaderboard((stenoRankedQuery.data ?? []) as Record<string, unknown>[]);
   const rankedLeaderboards = {
     mobile_touch: mobileTouch,
     mobile_swipe: mobileSwipe,
     hardware,
+    stenography,
     // Keep the pre-swipe web build healthy during the staged database/API/web rollout.
     mobile: mobileTouch,
     desktop: hardware,
@@ -464,6 +473,7 @@ async function issueRun(request: Request, user: User | null) {
     ageBand?: 'under13' | 'teen' | 'adult';
     deviceClass?: DeviceClass;
     category?: PassageCategorySelection;
+    inputPreference?: MobileInputPreference;
     challengeCode?: string;
   };
   if (body.ageBand !== 'teen' && body.ageBand !== 'adult') {
@@ -488,6 +498,7 @@ async function issueRun(request: Request, user: User | null) {
     return json({ error: 'The passage does not match the selected language.' }, 409);
   }
   const category: PassageCategorySelection = body.category === 'all' || isPassageCategory(body.category) ? body.category : 'all';
+  const inputPreference = sanitizeInputPreference(body.inputPreference);
   let challengePassage: Passage | undefined;
   if (body.mode === 'challenge' && typeof body.challengeCode === 'string') {
     const loaded = await admin.from('challenges').select('*')
@@ -519,6 +530,7 @@ async function issueRun(request: Request, user: User | null) {
     language: passage.language,
     duration_sec: durationSec,
     device_class: body.deviceClass,
+    input_preference: inputPreference,
     expires_at: expiresAt,
   }).select('*').single();
   if (inserted.error) throw inserted.error;
@@ -527,6 +539,7 @@ async function issueRun(request: Request, user: User | null) {
     passageId: passage.id,
     language: passage.language,
     durationSec,
+    inputPreference,
     issuedAt: inserted.data.issued_at,
     expiresAt,
   }, 201);
@@ -677,7 +690,11 @@ async function submitSession(request: Request, user: User | null) {
   if (typeof body.runTicketId !== 'string') return json({ error: 'Start a new authorized run before submitting.' }, 409);
   const validated = await validateSessionRunTicket(user, body.runTicketId, mode, passage.id, passage.language, durationSec, elapsedMs);
   const ticket = validated.ticket;
-  const inputMethod = inputMethodFromTelemetry(ticket.device_class === 'desktop' ? 'desktop' : 'mobile', inputTelemetry);
+  const inputMethod = inputMethodFromTelemetry(
+    ticket.device_class === 'desktop' ? 'desktop' : 'mobile',
+    inputTelemetry,
+    sanitizeInputPreference(ticket.input_preference),
+  );
 
   const player = await ensurePlayer(user);
   const doubleXpActive = Boolean(player.double_xp_until && Date.parse(player.double_xp_until) > Date.now());
@@ -1498,6 +1515,10 @@ function sanitizeInputTelemetry(value: unknown): InputTelemetry {
     bulkInsertEvents: boundedInteger(submitted.bulkInsertEvents, 0, 500),
     replacementEvents: boundedInteger(submitted.replacementEvents, 0, 500),
   };
+}
+
+function sanitizeInputPreference(value: unknown): MobileInputPreference {
+  return value === 'swipe' || value === 'steno' ? value : 'tap';
 }
 
 function boundedInteger(value: unknown, minimum: number, maximum: number) {

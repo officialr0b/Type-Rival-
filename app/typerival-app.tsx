@@ -125,6 +125,7 @@ type RunTicket = {
   passageId: string;
   language: TypingLanguage;
   durationSec: number;
+  inputPreference: MobileInputPreference;
   issuedAt: string;
   expiresAt: string;
 };
@@ -214,6 +215,7 @@ type SessionSubmissionPayload = {
   ageBand: AgeBand | null;
   typingProfile: TypingProfile;
   inputTelemetry: InputTelemetry;
+  inputPreference: MobileInputPreference;
   coachingInsightKeys?: string[];
 };
 
@@ -228,15 +230,18 @@ type DeferredInstallPrompt = Event & {
 };
 
 type PracticeStats = Bootstrap['stats'];
+type SiteTheme = 'dark' | 'light';
 
 const emptyStats: PracticeStats = { sessions: 0, averageWpm: 0, bestWpm: 0, accuracy: 0, activeDays: 0 };
+const THEME_STORAGE_KEY = 'typerival:theme:v1';
+const INPUT_PREFERENCE_STORAGE_KEY = 'typerival:input-preference:v2';
 
 const defaultBootstrap: Bootstrap = {
   user: { signedIn: false },
   stats: emptyStats,
   leaderboard: [],
-  openLeaderboards: { mobile_touch: [], mobile_swipe: [], hardware: [] },
-  rankedLeaderboards: { mobile_touch: [], mobile_swipe: [], hardware: [] },
+  openLeaderboards: { mobile_touch: [], mobile_swipe: [], hardware: [], stenography: [] },
+  rankedLeaderboards: { mobile_touch: [], mobile_swipe: [], hardware: [], stenography: [] },
   latestRanked: null,
   coachingHistory: [],
   progression: null,
@@ -248,6 +253,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
 }) {
   configureSupabase(supabaseConfig);
   const [screen, setScreen] = useState<Screen>('home');
+  const [theme, setTheme] = useState<SiteTheme>('dark');
   const [mode, setMode] = useState<GameMode>('practice');
   const [language, setLanguage] = useState<TypingLanguage>(DEFAULT_LANGUAGE);
   const [category, setCategory] = useState<PassageCategorySelection>('all');
@@ -304,11 +310,13 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           mobile_touch: loaded.openLeaderboards?.mobile_touch ?? [],
           mobile_swipe: loaded.openLeaderboards?.mobile_swipe ?? [],
           hardware: loaded.openLeaderboards?.hardware ?? [],
+          stenography: loaded.openLeaderboards?.stenography ?? [],
         },
         rankedLeaderboards: {
           mobile_touch: loaded.rankedLeaderboards?.mobile_touch ?? loaded.rankedLeaderboards?.mobile ?? [],
           mobile_swipe: loaded.rankedLeaderboards?.mobile_swipe ?? [],
           hardware: loaded.rankedLeaderboards?.hardware ?? loaded.rankedLeaderboards?.desktop ?? [],
+          stenography: loaded.rankedLeaderboards?.stenography ?? [],
         },
       });
     } catch {
@@ -316,6 +324,27 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     } finally {
       setLoadingProfile(false);
     }
+  }, []);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+      const nextTheme: SiteTheme = savedTheme === 'light' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = nextTheme;
+      document.documentElement.style.colorScheme = nextTheme;
+      setTheme(nextTheme);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const savedPreference = window.localStorage.getItem(INPUT_PREFERENCE_STORAGE_KEY);
+      if (savedPreference === 'tap' || savedPreference === 'swipe' || savedPreference === 'steno') {
+        setInputPreference(savedPreference === 'swipe' && browserDeviceClass() === 'desktop' ? 'tap' : savedPreference);
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, []);
 
   useEffect(() => {
@@ -519,7 +548,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
       const response = await authFetch('/api/runs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ mode, language, category, passageId: passage.id, durationSec, ageBand, deviceClass: browserDeviceClass(), challengeCode: challenge?.code }),
+        body: JSON.stringify({ mode, language, category, passageId: passage.id, durationSec, ageBand, deviceClass: browserDeviceClass(), inputPreference, challengeCode: challenge?.code }),
       });
       const data = await response.json() as RunTicket & { error?: string };
       if (!response.ok) throw new Error(data.error ?? 'The run could not be authorized.');
@@ -704,6 +733,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
             durationSec,
             runTicketId: runTicket?.runTicketId,
             ageBand,
+            inputPreference,
           }),
         });
         const data = await response.json() as ChallengeAttemptApiResult;
@@ -734,6 +764,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
             ageBand,
             typingProfile: localResult.typingProfile,
             inputTelemetry: localResult.inputTelemetry,
+            inputPreference,
             coachingInsightKeys: coachingReport?.insightKeys,
           },
         };
@@ -797,6 +828,21 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
     setInstallPrompt(null);
   };
 
+  const toggleTheme = () => {
+    setTheme((current) => {
+      const nextTheme: SiteTheme = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = nextTheme;
+      document.documentElement.style.colorScheme = nextTheme;
+      window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+      return nextTheme;
+    });
+  };
+
+  const chooseInputPreference = (preference: MobileInputPreference) => {
+    setInputPreference(preference);
+    window.localStorage.setItem(INPUT_PREFERENCE_STORAGE_KEY, preference);
+  };
+
   const openPassageStudio = () => {
     setScreen('passages');
     window.requestAnimationFrame(() => window.scrollTo({ top: 0 }));
@@ -854,10 +900,12 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
         juniorCareer={juniorCareer}
         privateJunior={privateJunior}
         mobileViewer={deviceClass === 'mobile'}
+        theme={theme}
         loading={loadingProfile}
         onHome={goHome}
         onLeaderboard={() => setScreen('leaderboard')}
         onInstall={install}
+        onTheme={toggleTheme}
         onAccount={() => setScreen('account')}
         onSignIn={openAuth}
         onSignOut={() => void signOut()}
@@ -895,7 +943,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
           onLanguage={changeLanguage}
           onCategory={chooseCategory}
           onDuration={setDurationSec}
-          onInputPreference={setInputPreference}
+          onInputPreference={chooseInputPreference}
           onBack={goHome}
           onStart={() => void startRace()}
           starting={starting}
@@ -934,7 +982,7 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
       )}
 
       {screen === 'leaderboard' && !privateJunior && <Leaderboard data={bootstrap} language={language} onLanguage={changeLanguage} onBack={goHome} />}
-      {screen === 'live' && !privateJunior && <PrivateRace initialRoomId={liveRoomId} language={language} inputPreference={inputPreference} mobileViewer={deviceClass === 'mobile'} ageBand={ageBand} signedIn={bootstrap.user.signedIn} onInputPreference={setInputPreference} onBack={goHome} onSignIn={openAuth} />}
+      {screen === 'live' && !privateJunior && <PrivateRace initialRoomId={liveRoomId} language={language} inputPreference={inputPreference} mobileViewer={deviceClass === 'mobile'} ageBand={ageBand} signedIn={bootstrap.user.signedIn} onInputPreference={chooseInputPreference} onBack={goHome} onSignIn={openAuth} />}
       {screen === 'academy' && <Academy onBack={goHome} />}
       {screen === 'passages' && (
         <PassageStudio
@@ -991,16 +1039,18 @@ export default function TypeRivalApp({ supabaseConfig, initialAgeBand }: {
   );
 }
 
-function Header({ player, progression, juniorCareer, privateJunior, mobileViewer, loading, onHome, onLeaderboard, onInstall, onAccount, onSignIn, onSignOut }: {
+function Header({ player, progression, juniorCareer, privateJunior, mobileViewer, theme, loading, onHome, onLeaderboard, onInstall, onTheme, onAccount, onSignIn, onSignOut }: {
   player: Player;
   progression: Progression | null;
   juniorCareer: Progression | null;
   privateJunior: boolean;
   mobileViewer: boolean;
+  theme: SiteTheme;
   loading: boolean;
   onHome: () => void;
   onLeaderboard: () => void;
   onInstall: () => void;
+  onTheme: () => void;
   onAccount: () => void;
   onSignIn: () => void;
   onSignOut: () => void;
@@ -1014,6 +1064,9 @@ function Header({ player, progression, juniorCareer, privateJunior, mobileViewer
         <button className="nav-home" onClick={onHome}>Home</button>
         {!privateJunior && <button onClick={onLeaderboard}>Leaderboard</button>}
         {mobileViewer && <button className="nav-install" onClick={onInstall}>Install</button>}
+        <button className="nav-theme" onClick={onTheme} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`} aria-pressed={theme === 'light'}>
+          <span aria-hidden="true">{theme === 'dark' ? '☀' : '◐'}</span> {theme === 'dark' ? 'Light' : 'Dark'}
+        </button>
         {privateJunior ? (
           <span className="nav-private">PRIVATE · THIS DEVICE</span>
         ) : player.signedIn ? (
@@ -1282,6 +1335,8 @@ function Setup({ mode, durationSec, challenge, language, category, passage, inpu
             ? 'Same passage. Same clock. Accuracy wins the tie.'
             : inputPreference === 'swipe'
               ? 'Swipe input accepts word gestures. Paste and drop stay blocked; your keyboard may show suggestions while swipe mode is active.'
+              : inputPreference === 'steno'
+                ? 'Steno mode accepts translated output from Plover or CAT software and keeps results in a separate writer lane.'
               : 'Autocorrect, autocomplete, spellcheck, and paste are disabled where your browser allows it.'}</p>
         <div className="setup-rules">
           <span><b>3</b><small>COUNTDOWN</small></span>
@@ -1303,14 +1358,15 @@ function Setup({ mode, durationSec, challenge, language, category, passage, inpu
           ))}
         </div>
         <div className="setup-row"><span><small>PASSAGE</small><b>{custom ? passage.title : `${categoryName(category)} · ${languageName(language)}`}</b></span><em>{custom ? 'UNVERIFIED · 0 XP' : 'READY'}</em></div>
-        {mobileViewer ? <div className="input-method-control">
-          <span><small>INPUT STYLE</small><b>How do you want to type?</b></span>
-          <div role="group" aria-label="Mobile input method">
-            <button className={inputPreference === 'tap' ? 'selected' : ''} aria-pressed={inputPreference === 'tap'} onClick={() => onInputPreference('tap')}><b>TAP</b><small>ONE KEY AT A TIME</small></button>
-            <button className={inputPreference === 'swipe' ? 'selected' : ''} aria-pressed={inputPreference === 'swipe'} onClick={() => onInputPreference('swipe')}><b>SWIPE</b><small>WORD GESTURES</small></button>
+        <div className="input-method-control">
+          <span><small>INPUT STYLE</small><b>{mobileViewer ? 'How do you want to type?' : 'Choose keyboard or stenography.'}</b></span>
+          <div role="group" aria-label="Input method">
+            <button className={inputPreference === 'tap' ? 'selected' : ''} aria-pressed={inputPreference === 'tap'} onClick={() => onInputPreference('tap')}><b>{mobileViewer ? 'TAP' : 'KEYBOARD'}</b><small>{mobileViewer ? 'ONE KEY AT A TIME' : 'STANDARD QWERTY INPUT'}</small></button>
+            {mobileViewer && <button className={inputPreference === 'swipe' ? 'selected' : ''} aria-pressed={inputPreference === 'swipe'} onClick={() => onInputPreference('swipe')}><b>SWIPE</b><small>WORD GESTURES</small></button>}
+            <button className={inputPreference === 'steno' ? 'selected' : ''} aria-pressed={inputPreference === 'steno'} onClick={() => onInputPreference('steno')}><b>STENO</b><small>WRITER / PLOVER / CAT</small></button>
           </div>
-          <p>Connected keyboards are detected automatically. Ranked Time Trial results are placed on the board that matches the input observed during the run.</p>
-        </div> : <div className="setup-row"><span><small>INPUT</small><b>Physical keyboard</b></span><em>AUTOMATIC</em></div>}
+          <p>{inputPreference === 'steno' ? 'Beta: focus the race field, then write normally in your steno software. TypeRival receives translated text—not raw strokes—so this lane is self-declared.' : 'Connected keyboards are detected automatically. Ranked results are placed on the lane that matches the observed input.'}</p>
+        </div>
         <button className="primary-button setup-start" onClick={onStart} disabled={starting}>{starting ? 'AUTHORIZING RUN…' : `START ${durationSec}-SECOND RUN`}</button>
       </section>
     </main>
@@ -1382,6 +1438,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
   const passageCharacters = useMemo(() => Array.from(passage.text), [passage.text]);
   const inputCharacters = useMemo(() => Array.from(input), [input]);
   const metrics = useMemo(() => calculateMetrics(passage.text, input, elapsedMs, totalTypedChars), [passage.text, input, elapsedMs, totalTypedChars]);
+  const nativeTranslationMode = inputPreference === 'swipe' || inputPreference === 'steno';
 
   useEffect(() => {
     const viewport = window.visualViewport;
@@ -1418,7 +1475,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
   const finish = useCallback((finalInput: string, finalTotal: number, finalElapsed: number) => {
     if (finished.current) return;
     finished.current = true;
-    if (inputPreference === 'swipe') {
+    if (nativeTranslationMode) {
       const finalCharacters = Array.from(finalInput);
       for (let index = swipeProfiledLength.current; index < finalCharacters.length; index += 1) {
         const actual = finalCharacters[index] ?? '';
@@ -1441,23 +1498,24 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
       elapsedMs: Math.max(1_000, finalElapsed),
       metrics: calculateMetrics(passage.text, finalInput, finalElapsed, finalTotal),
       typingProfile: { ...typingProfile.current, mistakes: [...typingProfile.current.mistakes] },
-      inputMethod: inputMethodFromTelemetry(browserDeviceClass(), telemetry),
+      inputMethod: inputMethodFromTelemetry(browserDeviceClass(), telemetry, inputPreference),
       inputTelemetry: telemetry,
     });
-  }, [inputPreference, mode, onComplete, passage, passageCharacters]);
+  }, [inputPreference, mode, nativeTranslationMode, onComplete, passage, passageCharacters]);
 
   const applyRaceEdit = useCallback((inputType: string, data: string | null, source: 'physical' | 'virtual') => {
     if (!activeRef.current || finished.current) return;
 
     const previousInput = currentInput.current;
-    const allowSwipeChunk = source === 'virtual' && inputPreference === 'swipe' && browserDeviceClass() === 'mobile';
+    const allowTranslatedChunk = source === 'virtual'
+      && (inputPreference === 'steno' || (inputPreference === 'swipe' && browserDeviceClass() === 'mobile'));
     const edit = applyTypingEdit(
       previousInput,
       inputType,
       data,
       passage.text.length + 20,
       true,
-      allowSwipeChunk ? 48 : 1,
+      allowTranslatedChunk ? 48 : 1,
     );
     if (edit.value === previousInput) return;
 
@@ -1569,7 +1627,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
       if (countdown === 1) {
         clearInputDiagnostics();
         if (inputRef.current) {
-          if (inputPreference === 'swipe') inputRef.current.value = '';
+          if (nativeTranslationMode) inputRef.current.value = '';
           else resetRaceInputField(inputRef.current);
         }
         currentInput.current = '';
@@ -1590,7 +1648,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
       }
     }, 850);
     return () => window.clearTimeout(timer);
-  }, [armed, countdown, inputPreference]);
+  }, [armed, countdown, nativeTranslationMode]);
 
   useEffect(() => {
     if (!active) return;
@@ -1608,8 +1666,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
 
     const handleBeforeInput = (event: InputEvent) => {
       recordInputDiagnostic('standard:before', event, field);
-      const swipeMode = inputPreference === 'swipe';
-      if (swipeMode) {
+      if (nativeTranslationMode) {
         if (!isNativeSwipeInputType(event.inputType) && event.cancelable) event.preventDefault();
         return;
       }
@@ -1628,8 +1685,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
 
     const handleInput = (event: Event) => {
       recordInputDiagnostic('standard:after', event, field);
-      const swipeMode = inputPreference === 'swipe';
-      if (!swipeMode) {
+      if (!nativeTranslationMode) {
         resetRaceInputField(field);
         return;
       }
@@ -1645,7 +1701,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
 
     const handleKeyDown = (event: KeyboardEvent) => {
       recordInputDiagnostic('standard:key', event, field);
-      if (inputPreference === 'swipe' || !activeRef.current || finished.current) return;
+      if (nativeTranslationMode || !activeRef.current || finished.current) return;
       const edit = physicalKeyEdit(event.key, event);
       if (!edit) return;
       event.preventDefault();
@@ -1675,7 +1731,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
       field.removeEventListener('compositionupdate', handleComposition);
       field.removeEventListener('compositionend', handleComposition);
     };
-  }, [applyRaceEdit, applySwipeValue, inputPreference]);
+  }, [applyRaceEdit, applySwipeValue, nativeTranslationMode]);
 
   const armRace = async () => {
     focusRaceInput(inputRef.current);
@@ -1692,7 +1748,7 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
 
   return (
     <main className="race-page game-page" onClick={() => focusRaceInput(inputRef.current)}>
-      <header className="race-top"><button onClick={(event) => { event.stopPropagation(); onCancel(); }}>✕ EXIT</button><span>{mode.toUpperCase()} · {languageName(passage.language).toUpperCase()}</span><small>BACKSPACE ENABLED · {inputPreference === 'swipe' ? 'SWIPE INPUT READY' : 'TAP INPUT READY'}</small></header>
+      <header className="race-top"><button onClick={(event) => { event.stopPropagation(); onCancel(); }}>✕ EXIT</button><span>{mode.toUpperCase()} · {languageName(passage.language).toUpperCase()}</span><small>BACKSPACE ENABLED · {inputPreference === 'swipe' ? 'SWIPE INPUT READY' : inputPreference === 'steno' ? 'STENO OUTPUT READY' : 'KEYBOARD INPUT READY'}</small></header>
       <section className="race-hud">
         <RaceMetric value={Math.round(metrics.netWpm)} label="NET WPM" accent />
         <RaceMetric value={`${metrics.accuracy.toFixed(1)}%`} label="ACCURACY" />
@@ -1717,13 +1773,13 @@ function RaceView({ mode, durationSec, passage, inputPreference, onArm, onCancel
           </div>
         )}
       </section>
-      <div className={`race-input-shell ${inputPreference === 'swipe' ? 'native-swipe' : ''}`}>
+      <div className={`race-input-shell ${nativeTranslationMode ? 'native-swipe' : ''}`}>
         <textarea
           id="race-typing-input"
           ref={inputRef}
-          className={`race-input ${inputPreference === 'swipe' ? 'race-input-native' : 'race-input-proxy'}`}
-          defaultValue={inputPreference === 'swipe' ? '' : RACE_INPUT_SENTINEL}
-          onFocus={(event) => { if (inputPreference !== 'swipe') resetRaceInputField(event.currentTarget); }}
+          className={`race-input ${nativeTranslationMode ? 'race-input-native' : 'race-input-proxy'}`}
+          defaultValue={nativeTranslationMode ? '' : RACE_INPUT_SENTINEL}
+          onFocus={(event) => { if (!nativeTranslationMode) resetRaceInputField(event.currentTarget); }}
           onPaste={(event) => event.preventDefault()}
           onDrop={(event) => event.preventDefault()}
           onBlur={() => { if (active && !finished.current) setTimeout(() => focusRaceInput(inputRef.current), 100); }}
@@ -2056,7 +2112,7 @@ function Leaderboard({ data, language, onLanguage, onBack }: {
   const title = board === 'open' ? 'Practice leaderboard' : 'Ranked Time Trial leaderboard';
   const description = board === 'open'
     ? 'You can hit the leaderboard as soon as your first run is complete. Clear, signed-in results count toward your rolling 30-day averages in the matching input lane.'
-    : '45-second Ranked Time Trials only. Tap, swipe, and hardware input each have a fair lane.';
+    : '45-second Ranked Time Trials only. Touch, swipe, hardware, and stenography each have a fair lane.';
 
   return (
     <main className="leaderboard-page">
@@ -2070,8 +2126,9 @@ function Leaderboard({ data, language, onLanguage, onBack }: {
         <button className={inputMethod === 'mobile_touch' ? 'selected' : ''} aria-pressed={inputMethod === 'mobile_touch'} onClick={() => setInputMethod('mobile_touch')}>MOBILE TOUCH</button>
         <button className={inputMethod === 'mobile_swipe' ? 'selected' : ''} aria-pressed={inputMethod === 'mobile_swipe'} onClick={() => setInputMethod('mobile_swipe')}>MOBILE SWIPE</button>
         <button className={inputMethod === 'hardware' ? 'selected' : ''} aria-pressed={inputMethod === 'hardware'} onClick={() => setInputMethod('hardware')}>DESKTOP / HARDWARE</button>
+        <button className={inputMethod === 'stenography' ? 'selected' : ''} aria-pressed={inputMethod === 'stenography'} onClick={() => setInputMethod('stenography')}>STENOGRAPHY</button>
       </nav>
-      <p className="leaderboard-note">TypeRival classifies the input actually observed during each run. Connected iPad and tablet keyboards join the hardware lane.{board === 'ranked' ? ' Rating remains unified during the async Ranked Time Trial beta.' : ''}</p>
+      <p className="leaderboard-note">TypeRival classifies standard input from the run. Steno is a self-declared beta lane because browsers receive translated text from writer software rather than raw strokes.{board === 'ranked' ? ' Rating remains unified during the async Ranked Time Trial beta.' : ''}</p>
       <LeaderboardTable entries={entries} emptyLabel={`Complete a signed-in ${inputMethodLabel(inputMethod).toLowerCase()} ${board === 'ranked' ? 'Ranked Time Trial ' : ''}run to claim the first spot.`} />
     </main>
   );
@@ -2362,6 +2419,7 @@ function categoryName(category: PassageCategorySelection) {
 }
 
 function inputMethodLabel(inputMethod: InputMethod) {
+  if (inputMethod === 'stenography') return 'Stenography';
   if (inputMethod === 'mobile_swipe') return 'Mobile swipe';
   if (inputMethod === 'mobile_touch') return 'Mobile touch';
   return 'Desktop / hardware';

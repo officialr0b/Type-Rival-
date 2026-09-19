@@ -4,7 +4,7 @@ import { applyLiveEdit, decideLiveWinner, insertedCharacters, liveMetrics, type 
 import { livePassage } from './passages.js';
 
 type LiveAuth = { userId: string; handle: string };
-type JoinOptions = { inputPreference?: 'tap' | 'swipe'; ageBand?: 'teen' | 'adult'; language?: unknown };
+type JoinOptions = { inputPreference?: 'tap' | 'swipe' | 'steno'; ageBand?: 'teen' | 'adult'; language?: unknown };
 
 export class LivePlayer extends Schema {
   @type('string') handle = '';
@@ -75,7 +75,9 @@ export class LiveTypingRoom extends Room<{ state: LiveRaceState }> {
     }
     const player = new LivePlayer();
     player.handle = auth.handle;
-    player.allowSwipe = options.inputPreference === 'swipe';
+    // Both swipe keyboards and steno translation software can emit bounded
+    // multi-character edits. Paste/drop remain rejected by applyLiveEdit.
+    player.allowSwipe = options.inputPreference === 'swipe' || options.inputPreference === 'steno';
     this.userIds.set(client.sessionId, auth.userId);
     this.state.players.set(client.sessionId, player);
     if (this.state.players.size === 2 && this.state.phase === 'waiting') this.scheduleRace();
