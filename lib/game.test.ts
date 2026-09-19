@@ -162,6 +162,8 @@ describe('TypeRival scoring', () => {
     assert.equal(inputMethodFromTelemetry('mobile', { ...emptyInputTelemetry(), bulkInsertEvents: 2 }), 'mobile_swipe');
     assert.equal(inputMethodFromTelemetry('mobile', { ...emptyInputTelemetry(), replacementEvents: 1 }), 'mobile_swipe');
     assert.equal(inputMethodFromTelemetry('mobile', { ...emptyInputTelemetry(), physicalKeyEvents: 1, bulkInsertEvents: 2 }), 'hardware');
+    assert.equal(inputMethodFromTelemetry('desktop', emptyInputTelemetry(), 'steno'), 'stenography');
+    assert.equal(inputMethodFromTelemetry('mobile', { ...emptyInputTelemetry(), physicalKeyEvents: 10 }, 'steno'), 'stenography');
   });
 
   it('allows corrections when a mode enables backspace', () => {

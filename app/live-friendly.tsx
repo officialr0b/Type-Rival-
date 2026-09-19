@@ -91,6 +91,7 @@ export default function PrivateRace({ initialRoomId, language, inputPreference, 
   const remaining = snapshot?.phase === 'racing' ? Math.max(0, snapshot.endsAt - now) : 45_000;
   const countdown = snapshot?.phase === 'countdown' ? Math.max(1, Math.ceil((snapshot.startsAt - now) / 1_000)) : 0;
   const roomLanguage = SUPPORTED_LANGUAGES.find((option) => option.code === (snapshot?.language ?? language))?.label ?? 'English (US)';
+  const nativeTranslationMode = inputPreference === 'swipe' || inputPreference === 'steno';
 
   const syncState = useCallback((state: unknown) => {
     const serializable = state && typeof state === 'object' && 'toJSON' in state
@@ -201,12 +202,12 @@ export default function PrivateRace({ initialRoomId, language, inputPreference, 
     const field = inputRef.current;
     if (!field || snapshot?.phase !== 'racing' || reconnecting) return;
     currentNativeInput.current = '';
-    if (inputPreference === 'swipe') field.value = currentNativeInput.current;
+    if (nativeTranslationMode) field.value = currentNativeInput.current;
     else resetInput(field);
     focusRaceInput(field);
     const beforeInput = (event: InputEvent) => {
       recordInputDiagnostic('live:before', event, field);
-      if (inputPreference === 'swipe') {
+      if (nativeTranslationMode) {
         if (!isNativeSwipeInputType(event.inputType) && event.cancelable) event.preventDefault();
         return;
       }
@@ -221,7 +222,7 @@ export default function PrivateRace({ initialRoomId, language, inputPreference, 
     };
     const input = (event: Event) => {
       recordInputDiagnostic('live:after', event, field);
-      if (inputPreference !== 'swipe') {
+      if (!nativeTranslationMode) {
         resetInput(field);
         return;
       }
@@ -239,7 +240,7 @@ export default function PrivateRace({ initialRoomId, language, inputPreference, 
     };
     const keyDown = (event: KeyboardEvent) => {
       recordInputDiagnostic('live:key', event, field);
-      if (inputPreference === 'swipe' || snapshot?.phase !== 'racing' || reconnecting) return;
+      if (nativeTranslationMode || snapshot?.phase !== 'racing' || reconnecting) return;
       const edit = physicalKeyEdit(event.key, event);
       if (!edit) return;
       event.preventDefault();
@@ -262,7 +263,7 @@ export default function PrivateRace({ initialRoomId, language, inputPreference, 
       field.removeEventListener('compositionupdate', composition);
       field.removeEventListener('compositionend', composition);
     };
-  }, [inputPreference, reconnecting, snapshot?.passage, snapshot?.phase]);
+  }, [nativeTranslationMode, reconnecting, snapshot?.passage, snapshot?.phase]);
 
   const shareRoom = async () => {
     const url = `${window.location.origin}/?race=${encodeURIComponent(roomId)}`;
@@ -300,7 +301,15 @@ export default function PrivateRace({ initialRoomId, language, inputPreference, 
       <section className="live-lobby">
         <div><span className="eyebrow">COLYSEUS · PRIVATE RACE ALPHA</span><h1>Same clock. Same moment.</h1><p>Create a private 45-second room or enter the code a rival sent you. The room uses your selected language. Alpha races do not change rating or XP yet.</p></div>
         <div className="live-connect-card">
-          {mobileViewer ? <div className="input-method-control"><span><small>INPUT STYLE</small><b>Choose your style before joining.</b></span><div role="group" aria-label="Live input method"><button className={inputPreference === 'tap' ? 'selected' : ''} aria-pressed={inputPreference === 'tap'} onClick={() => onInputPreference('tap')}><b>TAP</b><small>ONE KEY AT A TIME</small></button><button className={inputPreference === 'swipe' ? 'selected' : ''} aria-pressed={inputPreference === 'swipe'} onClick={() => onInputPreference('swipe')}><b>SWIPE</b><small>WORD GESTURES</small></button></div></div> : <div className="setup-row"><span><small>INPUT</small><b>Physical keyboard</b></span><em>AUTOMATIC</em></div>}
+          <div className="input-method-control">
+            <span><small>INPUT STYLE</small><b>Choose your style before joining.</b></span>
+            <div role="group" aria-label="Live input method">
+              <button className={inputPreference === 'tap' ? 'selected' : ''} aria-pressed={inputPreference === 'tap'} onClick={() => onInputPreference('tap')}><b>{mobileViewer ? 'TAP' : 'KEYBOARD'}</b><small>{mobileViewer ? 'ONE KEY AT A TIME' : 'STANDARD QWERTY INPUT'}</small></button>
+              {mobileViewer && <button className={inputPreference === 'swipe' ? 'selected' : ''} aria-pressed={inputPreference === 'swipe'} onClick={() => onInputPreference('swipe')}><b>SWIPE</b><small>WORD GESTURES</small></button>}
+              <button className={inputPreference === 'steno' ? 'selected' : ''} aria-pressed={inputPreference === 'steno'} onClick={() => onInputPreference('steno')}><b>STENO</b><small>WRITER / PLOVER / CAT</small></button>
+            </div>
+            {inputPreference === 'steno' && <p>Focus the race field, then write through your translation software. Private Race receives translated text, not raw strokes.</p>}
+          </div>
           <button className="primary-button" onClick={() => signedIn ? void connect() : onSignIn()} disabled={connecting}>{connecting ? 'OPENING ROOM…' : signedIn ? 'CREATE PRIVATE ROOM' : 'SIGN IN TO CREATE A ROOM'}</button>
           <span>OR JOIN WITH A ROOM CODE</span>
           <div><input value={roomCode} onChange={(event) => setRoomCode(event.target.value.slice(0, 64))} placeholder="ROOM CODE" aria-label="Private Race room code" autoCapitalize="none" autoCorrect="off" spellCheck={false} /><button className="secondary-button" onClick={() => signedIn ? void connect(roomCode) : onSignIn()} disabled={connecting || !roomCode.trim()}>{signedIn ? 'JOIN' : 'SIGN IN'}</button></div>
@@ -321,8 +330,8 @@ export default function PrivateRace({ initialRoomId, language, inputPreference, 
       {snapshot?.phase === 'finished' && <div className="live-finish" onClick={(event) => event.stopPropagation()}><span>{localPlayer?.outcome?.toUpperCase()}</span><h2>{snapshot.finishReason === 'forfeit' ? 'Race decided by disconnect.' : 'Private Race complete.'}</h2><div className="live-result-grid">{players.map(([id, player]) => <article key={id} className={id === sessionId ? 'you' : ''}><small>{id === sessionId ? 'YOU' : 'RIVAL'}</small><b>{player.handle}</b><strong>{Math.round(player.wpm)} <em>WPM</em></strong><span>{player.accuracy.toFixed(1)}% accuracy · {player.errors} errors</span></article>)}</div><div className="live-finish-actions"><button className="primary-button" onClick={() => void shareResult()}>SHARE RESULT ↗</button><button className="secondary-button" onClick={onBack}>BACK HOME</button></div><small>Private Race results are session-only and do not change XP or rating during the stability alpha.</small></div>}
     </section>
     {(reconnecting || rivalDisconnected) && snapshot?.phase !== 'finished' && <div className="connection-banner" role="status">{reconnecting ? 'RECONNECTING · YOUR PLACE IS HELD FOR 15 SECONDS' : 'RIVAL RECONNECTING · THEIR PLACE IS HELD FOR 15 SECONDS'}</div>}
-    <div className={`race-input-shell ${inputPreference === 'swipe' ? 'native-swipe' : ''}`}>
-      <textarea id="live-race-typing-input" ref={inputRef} className={`race-input ${inputPreference === 'swipe' ? 'race-input-native' : 'race-input-proxy'}`} defaultValue={inputPreference === 'swipe' ? '' : LIVE_SENTINEL} onFocus={(event) => { if (inputPreference !== 'swipe') resetInput(event.currentTarget); }} onPaste={(event) => event.preventDefault()} onDrop={(event) => event.preventDefault()} autoComplete="off" autoCorrect={inputPreference === 'swipe' ? 'on' : 'off'} autoCapitalize={inputPreference === 'swipe' ? 'sentences' : 'none'} inputMode="text" enterKeyHint="done" rows={1} wrap="off" spellCheck={inputPreference === 'swipe'} disabled={reconnecting || snapshot?.phase !== 'racing'} aria-label="Private Race typing input" />
+    <div className={`race-input-shell ${nativeTranslationMode ? 'native-swipe' : ''}`}>
+      <textarea id="live-race-typing-input" ref={inputRef} className={`race-input ${nativeTranslationMode ? 'race-input-native' : 'race-input-proxy'}`} defaultValue={nativeTranslationMode ? '' : LIVE_SENTINEL} onFocus={(event) => { if (!nativeTranslationMode) resetInput(event.currentTarget); }} onPaste={(event) => event.preventDefault()} onDrop={(event) => event.preventDefault()} autoComplete="off" autoCorrect={inputPreference === 'swipe' ? 'on' : 'off'} autoCapitalize={inputPreference === 'swipe' ? 'sentences' : 'none'} inputMode="text" enterKeyHint="done" rows={1} wrap="off" spellCheck={inputPreference === 'swipe'} disabled={reconnecting || snapshot?.phase !== 'racing'} aria-label="Private Race typing input" />
     </div>
     {status && <div className="toast" role="status">{status}</div>}
   </main>;

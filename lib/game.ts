@@ -3,8 +3,8 @@ import { LEARNING_PASSAGES } from './learning-passages.ts';
 
 export type GameMode = 'practice' | 'friendly' | 'ranked' | 'challenge';
 export type DeviceClass = 'mobile' | 'desktop';
-export type InputMethod = 'mobile_touch' | 'mobile_swipe' | 'hardware';
-export type MobileInputPreference = 'tap' | 'swipe';
+export type InputMethod = 'mobile_touch' | 'mobile_swipe' | 'hardware' | 'stenography';
+export type MobileInputPreference = 'tap' | 'swipe' | 'steno';
 export type InputTelemetry = {
   physicalKeyEvents: number;
   singleInsertEvents: number;
@@ -111,7 +111,11 @@ export function emptyInputTelemetry(): InputTelemetry {
 export function inputMethodFromTelemetry(
   deviceClass: DeviceClass,
   telemetry: InputTelemetry,
+  inputPreference: MobileInputPreference = 'tap',
 ): InputMethod {
+  // Browsers receive translated text from Plover/CAT software, not raw steno
+  // strokes, so stenography is an explicit player-selected lane.
+  if (inputPreference === 'steno') return 'stenography';
   if (deviceClass === 'desktop' || telemetry.physicalKeyEvents > 0) return 'hardware';
   if (telemetry.bulkInsertEvents > 0 || telemetry.replacementEvents > 0) return 'mobile_swipe';
   return 'mobile_touch';

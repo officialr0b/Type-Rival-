@@ -2,6 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import StenoAcademy from './steno-academy';
 import {
   ACADEMY_KEYBOARD_ROWS,
   ACADEMY_LESSONS,
@@ -43,6 +44,7 @@ type AcademyDrillSession = {
 const MODEL_URL = process.env.NEXT_PUBLIC_ACADEMY_MODEL_URL;
 
 export default function Academy({ onBack }: { onBack: () => void }) {
+  const [track, setTrack] = useState<'typing' | 'steno'>('typing');
   const [phase, setPhase] = useState<AcademyPhase>('catalog');
   const [lesson, setLesson] = useState<AcademyLesson>(ACADEMY_LESSONS[0]);
   const [stageIndex, setStageIndex] = useState(0);
@@ -233,6 +235,10 @@ export default function Academy({ onBack }: { onBack: () => void }) {
     nextLesson();
   };
 
+  if (track === 'steno') {
+    return <StenoAcademy onBack={onBack} onSwitchTrack={() => setTrack('typing')} />;
+  }
+
   return (
     <main className="academy-page">
       <header className="academy-heading">
@@ -241,6 +247,10 @@ export default function Academy({ onBack }: { onBack: () => void }) {
           <span className="eyebrow">TYPE RIVAL ACADEMY · MVP</span>
           <h1>Learn the motion.<br/><i>Unlock the speed.</i></h1>
           <p>Miles coaches the key, finger, posture, and rhythm behind faster typing through an 18-stage path. A missed key stays active until you correct the movement—the lesson text never changes underneath you.</p>
+          <nav className="academy-track-switch" aria-label="Academy learning track">
+            <button className="selected" aria-current="page">TOUCH TYPING</button>
+            <button onClick={() => setTrack('steno')}>STENOGRAPHY</button>
+          </nav>
         </div>
         <div className="academy-overview" aria-label="Academy progress">
           <span><small>MASTERY</small><b>{completedStageCount}/{totalStageCount}</b><em>stages cleared</em></span>

@@ -71,3 +71,23 @@ test('a Speed Ladder miss cannot splice characters into rhythm', async ({ page }
   await page.keyboard.type('ythm');
   await expect(page.getByRole('heading', { name: 'Stage cleared.' })).toBeVisible();
 });
+
+test('opens the full stenography track and validates translated writer output', async ({ page }) => {
+  await page.getByRole('button', { name: 'STENOGRAPHY' }).click();
+  await expect(page.getByRole('heading', { name: /Write the sound/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /stenography lesson$/ })).toHaveCount(6);
+  await expect(page.getByText('18-STAGE STENO PATH')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Start Connect your writer stenography lesson' }).click();
+  await expect(page.getByText('WRITER CHECK · 0/3 SELECTED')).toBeVisible();
+  const writerChecks = page.getByRole('checkbox');
+  for (let index = 0; index < 3; index += 1) await writerChecks.nth(index).check();
+  await page.getByRole('button', { name: 'BEGIN SIGNAL DRILL' }).click();
+  await page.getByRole('textbox', { name: 'Stenography translated output' }).fill('steno ready ');
+
+  await expect(page.getByRole('heading', { name: 'Stage cleared.' })).toBeVisible();
+  await expect(page.getByText('100.0%', { exact: true })).toBeVisible();
+  const saved = await page.evaluate(() => window.localStorage.getItem('typerival:steno-academy:v1'));
+  expect(saved).toContain('"writer-ready"');
+  expect(saved).toContain('"completedStages":["learn"]');
+});
